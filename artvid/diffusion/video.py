@@ -572,6 +572,9 @@ def _save_rgb(image_rgb: "torch.Tensor", path: str) -> None:
     import torch
     from PIL import Image
 
+    # Move to CPU + float32 before the numpy/PIL hop: MPS tensors cannot be
+    # ``.numpy()``-ed directly, and float64 is unsupported on MPS — float32 here
+    # is both MPS-safe and the right precision for an 8-bit RGB encode.
     disp = image_rgb.detach().to("cpu", dtype=torch.float32).clamp(0.0, 1.0)
     if disp.dim() == 4:
         disp = disp[0]

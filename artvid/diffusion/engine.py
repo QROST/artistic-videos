@@ -239,16 +239,12 @@ class DiffusionEngine:
         decode produces NaNs/artifacts in fp16, either load the fp16-fix VAE or
         run *just* the VAE in fp32 (``pipe.vae.to(torch.float32)`` + cast latents)
         and keep the UNet in fp16. Also try bf16 on MPS and compare speed/quality.
-        """
-        import torch
 
-        dev_type = self.device.type if self.device is not None else "cpu"
-        if dev_type == "cuda":
-            return torch.bfloat16
-        if dev_type == "mps":
-            # TODO(tuning): bf16-vs-fp16 on MPS; default fp16 for op coverage.
-            return torch.float16
-        return torch.float32  # cpu
+        The cuda->bf16 / mps->fp16 / cpu->fp32 choice is centralized in
+        :func:`artvid.device.autocast_dtype` (the single source of truth) so the
+        diffusion and (future) VGG-autocast paths agree; we defer to it here.
+        """
+        return _device.autocast_dtype(self.device)
 
     # -- lazy load ----------------------------------------------------------
 

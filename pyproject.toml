@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "artvid"
+version = "0.1.0"
+description = "Artistic video style transfer (PyTorch/MPS modernization of Ruder et al. 2016)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "artistic-videos contributors" }]
+keywords = ["style-transfer", "video", "pytorch", "mps", "optical-flow"]
+
+dependencies = [
+    # NOTE: On Apple Silicon you must install the Apple Silicon (arm64) build of
+    # torch/torchvision that ships the MPS backend. Install from the official
+    # PyTorch index, e.g.:
+    #   pip install torch torchvision
+    # (the default PyPI wheels already include the MPS backend on macOS arm64).
+    # These constraints intentionally do not pin a build variant.
+    "torch>=2.2",
+    "torchvision>=0.17",
+    "numpy>=1.26",
+    "pillow>=10.0",
+    "imageio>=2.31",
+    "imageio-ffmpeg>=0.4.9",
+    "tyro>=0.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+artvid = "artvid.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["artvid*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

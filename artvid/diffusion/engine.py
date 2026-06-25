@@ -500,8 +500,6 @@ class DiffusionEngine:
             image = load_image(image)  # (3,H,W) float32 [0,1]
 
         if hasattr(image, "dim"):  # torch tensor
-            import numpy as np
-
             t = image
             if t.dim() == 4:
                 t = t[0]
@@ -867,7 +865,6 @@ class DiffusionEngine:
         Also stashes resolution-correct SDXL ``time_ids`` for this frame so
         :meth:`_encode_prompts` builds them at the right size.
         """
-        import torch
         import torch.nn.functional as F
 
         c = control_image

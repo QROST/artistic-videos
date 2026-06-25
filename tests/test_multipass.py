@@ -22,7 +22,6 @@ from artvid.pipeline.multipass import (
     temporal_loss_enabled,
 )
 
-
 # ---------------------------------------------------------------------------
 # Pass direction / sequencing (artistic_video_multiPass.lua:147-150)
 # ---------------------------------------------------------------------------
@@ -268,7 +267,9 @@ def test_init_blended_neighbour_pulls_toward_warped(torch, monkeypatch):
     cfg = Config(blend_weight=1.0, blend_weight_last_pass=0.0)
     device = torch.device("cpu")
     prev_pass_rgb = torch.zeros(3, 4, 4)  # previous-pass result is black
-    outputs_rgb = {(2, 1): prev_pass_rgb}
+    # _init_blended reads the previous pass via _output_rgb(frame_idx, run-1):
+    # for run=3 that is the (frame_idx=2, run=2) cache entry.
+    outputs_rgb = {(2, 2): prev_pass_rgb}
 
     warped = torch.ones(3, 4, 4)  # neighbour warps to white
     prev_warp = (warped, torch.ones(4, 4))  # fully reliable

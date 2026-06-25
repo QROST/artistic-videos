@@ -60,7 +60,6 @@ def pick_device(prefer: str | None = None) -> str:
     Returns:
         One of :data:`VALID_DEVICES`.
     """
-    import torch
 
     if prefer is not None:
         prefer = prefer.lower()

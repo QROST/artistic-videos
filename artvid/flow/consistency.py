@@ -30,7 +30,9 @@ used by Ruder et al. 2016). Concretely, with ``p' = p + w(p)`` and
 The right-hand-side is a tolerance that grows with the flow magnitude (1% of
 the summed squared magnitudes) plus a 0.5 px floor, so large but consistent
 motions are not penalised. Pixels whose forward flow leaves the image domain
-are also marked unreliable.
+are also marked unreliable, but with the *neutral* ``0`` seed (like motion
+boundaries), not the negative occlusion seed — see ``consistencyChecker.cpp:64``
+and the note below.
 
 A second test flags **motion boundaries**: where the spatial gradient of the
 forward flow is large,
@@ -39,10 +41,13 @@ forward flow is large,
 
 These reproduce the exact thresholds in ``consistencyChecker.cpp:77,83``.
 
-As in the C++ original, occluded pixels are seeded to a *negative* value
-(``-1`` here, ``-255`` there) before optional Gaussian smoothing so the
-smoothing erodes reliability outward across the occlusion edge; the result is
-then clipped to ``[0, 1]``. Motion-boundary pixels are seeded to ``0``.
+As in the C++ original, forward-backward *inconsistent* (occluded) pixels are
+seeded to a *negative* value (``-1`` here, ``-255`` there) before optional
+Gaussian smoothing so the smoothing erodes reliability outward across the
+occlusion edge; the result is then clipped to ``[0, 1]``. Motion-boundary
+pixels — and out-of-bounds forward targets — are instead seeded to the neutral
+``0`` (``consistencyChecker.cpp:64-65,84``), so they do not erode their
+neighbours' reliability during smoothing.
 
 Output scale
 ------------
@@ -109,10 +114,14 @@ def _flow_gradient_sq(flow: "torch.Tensor") -> "torch.Tensor":
 
     Reproduces the ``motionEdge`` accumulation in
     ``consistencyChecker.cpp:43-54``: sum over both flow components of the
-    squared x-derivative and squared y-derivative. The C++ used a 3-tap
-    central-difference derivative filter (``CDerivative<float>(3)``); we use the
-    plain central difference ``(f[i+1] - f[i-1]) / 2`` with replicate padding at
-    the borders, which is the same operator.
+    squared x-derivative and squared y-derivative. The C++ used Brox et al.'s
+    3-tap derivative filter (``CDerivative<float>(3)``) applied via ``NFilter``
+    boundary handling; we use the plain central difference
+    ``(f[i+1] - f[i-1]) / 2`` with replicate padding at the borders. This is a
+    close *approximation* of that operator, not a bit-exact reproduction (the
+    interior tap weights match, but ``CDerivative(3)`` and ``NFilter`` treat the
+    borders differently). Since the result is squared, thresholded, and used
+    only as an internal motion-boundary feature, the difference is negligible.
 
     Args:
         flow: ``(2, H, W)`` flow.
@@ -120,7 +129,6 @@ def _flow_gradient_sq(flow: "torch.Tensor") -> "torch.Tensor":
     Returns:
         ``(H, W)`` tensor of squared gradient magnitude.
     """
-    import torch
     import torch.nn.functional as F
 
     # Pad with edge replication so border derivatives are defined (the C++
@@ -219,8 +227,8 @@ def _gaussian_smooth(img: "torch.Tensor", sigma: float) -> "torch.Tensor":
 
 
 def consistency_mask(
-    forward_flow: "torch.Tensor",
-    backward_flow: "torch.Tensor",
+    flow1: "torch.Tensor",
+    flow2: "torch.Tensor",
     *,
     smooth_sigma: float = _DEFAULT_SMOOTH_SIGMA,
     check_motion_boundaries: bool = True,
@@ -229,21 +237,31 @@ def consistency_mask(
 
     Ports ``checkConsistency`` + the smoothing/clipping in ``main``
     (``consistencyChecker.cpp:40-112``). The returned mask is high (``~1``)
-    where the forward flow is consistent with the backward flow and low (``0``)
-    where it is inconsistent (occlusions, disocclusions) or — optionally — on
-    motion boundaries.
+    where ``flow1`` is consistent with ``flow2`` and low (``0``) where it is
+    inconsistent (occlusions, disocclusions) or — optionally — on motion
+    boundaries.
 
-    The occlusion criterion is (see module docstring for the derivation): with
-    ``p' = p + forward(p)`` and ``w' = backward(p')`` bilinearly sampled,
+    Parameter naming note (see ``docs/06`` #7): the two arguments are named
+    ``flow1``/``flow2`` to mirror the C++ ``checkConsistency(flow1, flow2, ...)``
+    exactly and to avoid the misleading forward/backward labels. The reliability
+    is computed *for the domain of* ``flow1``: ``flow1`` is the flow being
+    *validated* and ``flow2`` is the opposite-direction flow used to
+    cross-check it. The math is symmetric in form but NOT in meaning — the mask
+    lives on ``flow1``'s frame. Callers therefore pass the flow whose pixels
+    they want reliabilities for as ``flow1`` (e.g. ``cli`` computes the
+    backward-warp reliability via ``consistency_mask(backward, forward, ...)``).
 
-        |forward(p) + w'|^2 > 0.01 * (|forward(p)|^2 + |w'|^2) + 0.5  →  occluded.
+    The criterion is (see module docstring for the derivation): with
+    ``p' = p + flow1(p)`` and ``w' = flow2(p')`` bilinearly sampled,
+
+        |flow1(p) + w'|^2 > 0.01 * (|flow1(p)|^2 + |w'|^2) + 0.5  →  occluded.
 
     Args:
-        forward_flow: ``(2, H, W)`` (or ``(1, 2, H, W)``) flow from frame ``t``
-            to frame ``t+1``, in ``(u, v)`` pixel order (channel 0 = dx/width,
-            channel 1 = dy/height).
-        backward_flow: ``(2, H, W)`` flow from frame ``t+1`` back to ``t``, same
-            convention. Must match ``forward_flow``'s spatial size.
+        flow1: ``(2, H, W)`` (or ``(1, 2, H, W)``) flow being validated, in
+            ``(u, v)`` pixel order (channel 0 = dx/width, channel 1 = dy/height).
+            The returned mask is defined on this flow's frame.
+        flow2: ``(2, H, W)`` opposite-direction flow used to cross-check
+            ``flow1``, same convention. Must match ``flow1``'s spatial size.
         smooth_sigma: Gaussian sigma for post-smoothing the mask (px). ``0``
             disables smoothing. Defaults to ``0.8`` (the C++ ``SMOOTH_STRENGH``).
         check_motion_boundaries: If ``True`` (default, matching the C++), also
@@ -255,11 +273,11 @@ def consistency_mask(
     """
     import torch
 
-    fwd = _as_2hw(forward_flow)
-    bwd = _as_2hw(backward_flow)
+    fwd = _as_2hw(flow1)
+    bwd = _as_2hw(flow2)
     if fwd.shape[1:] != bwd.shape[1:]:
         raise ValueError(
-            "forward and backward flow must share spatial size; got "
+            "flow1 and flow2 must share spatial size; got "
             f"{tuple(fwd.shape)} vs {tuple(bwd.shape)}"
         )
 
@@ -283,7 +301,7 @@ def consistency_mask(
     by = ys + v
 
     # Backward flow sampled at p' (sub-pixel, bilinear). Out-of-bounds targets
-    # are flagged and become fully unreliable.
+    # are flagged (``in_bounds``) and later seeded to 0 (cpp:64-65), see below.
     u_back, v_back, in_bounds = _sample_bilinear(bwd, bx, by)
 
     # Round-trip landing point: p' + backward(p'). Squared distance to p.
@@ -294,29 +312,42 @@ def consistency_mask(
     fwd_mag_sq = u * u + v * v
     back_mag_sq = u_back * u_back + v_back * v_back
 
-    # Forward-backward consistency test (cpp:77).
-    occluded = fb_err_sq >= (
+    # Forward-backward INCONSISTENCY test (cpp:77). Only round-trip failure
+    # earns the negative seed; out-of-bounds is seeded separately below.
+    inconsistent = fb_err_sq >= (
         _FB_REL_TOL * (fwd_mag_sq + back_mag_sq) + _FB_ABS_TOL
     )
-    # Out-of-bounds forward targets are unreliable regardless (cpp:64-65).
-    occluded = occluded | (~in_bounds)
 
-    # Seed reliability: 1 everywhere, occluded pixels to a negative value so the
-    # subsequent Gaussian smoothing erodes reliability outward across the edge
-    # (the C++ uses -255 on a [0,255] scale; we use -1 on a [0,1] scale).
+    # Seed reliability: 1 everywhere.
     reliable = torch.ones((height, width), dtype=torch.float32, device=device)
+    # fb-inconsistent pixels get a *negative* seed so the subsequent Gaussian
+    # smoothing erodes reliability outward across the occlusion edge (the C++
+    # writes -255 on a [0,255] scale, cpp:78-81; we use -1 on the [0,1] scale).
     reliable = torch.where(
-        occluded,
+        inconsistent,
         torch.full_like(reliable, _OCCLUDED_SEED),
+        reliable,
+    )
+    # Out-of-bounds forward targets are seeded to 0.0, NOT the negative seed:
+    # consistencyChecker.cpp:64-65 sets `reliable(ax, ay) = 0.0f; continue;` for
+    # OOB targets — the same neutral 0-seed used for motion boundaries (cpp:84),
+    # not the -255 occlusion seed. Keeping them at 0 means they do not drag
+    # neighbouring pixels' reliability down during the outward smoothing. The
+    # OOB guard `continue`s before the fb test in the C++, so OOB takes
+    # precedence over the fb seed where they overlap; we apply it last to match.
+    reliable = torch.where(
+        ~in_bounds,
+        torch.full_like(reliable, _MOTION_BOUNDARY_SEED),
         reliable,
     )
 
     if check_motion_boundaries:
-        # Motion-boundary test (cpp:83). Only applied where not already occluded
-        # (the C++ ``continue`` skips the boundary test on occluded pixels).
+        # Motion-boundary test (cpp:83). Skipped where already fb-inconsistent or
+        # out-of-bounds (the C++ ``continue`` on those reaches the boundary test
+        # only for the surviving pixels).
         grad_sq = _flow_gradient_sq(fwd)
         motion_boundary = grad_sq > (_MB_REL_TOL * fwd_mag_sq + _MB_ABS_TOL)
-        motion_boundary = motion_boundary & (~occluded)
+        motion_boundary = motion_boundary & (~inconsistent) & in_bounds
         reliable = torch.where(
             motion_boundary,
             torch.full_like(reliable, _MOTION_BOUNDARY_SEED),

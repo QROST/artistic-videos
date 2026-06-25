@@ -54,10 +54,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence
 
 from artvid.config import Config
-
 
 # ---------------------------------------------------------------------------
 # Pure (torch-free) helpers: frame/flow filenames + long-term index selection
@@ -369,7 +368,6 @@ def stylize_video(
         _, ch, cw = content_rgb.shape
         content_pre = preprocess(content_rgb, mode=mode).unsqueeze(0).to(device)
 
-        is_first = frame_idx == first_idx
         num_iters = config.num_iterations[0] if frame_idx == start else config.num_iterations[1]
         init_mode = config.init[0] if frame_idx == start else config.init[1]
 
@@ -460,7 +458,6 @@ def stylize_video(
         # --- Initialization ---
         image_var = _init_frame_image(
             init_mode,
-            is_first=is_first,
             frame_idx=frame_idx,
             config=config,
             content_pre=content_pre.squeeze(0),
@@ -690,7 +687,6 @@ def _warp_previous_output(prev_out_rgb, backward_flow):
 def _init_frame_image(
     init_mode,
     *,
-    is_first,
     frame_idx,
     config,
     content_pre,

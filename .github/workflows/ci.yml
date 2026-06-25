@@ -1,0 +1,57 @@
+name: CI
+
+# Lint + compile + the offline test subset. We deliberately deselect tests
+# marked `network` (download VGG-19 / RAFT / SDXL weights) and `mps` (require the
+# Apple-Silicon Metal backend) so the Linux runner stays hermetic and fast.
+on:
+  push:
+  pull_request:
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: lint + compile + offline tests (py3.11, cpu)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install CPU torch + torchvision
+        # CPU-only wheels keep the install small and GPU-free. Pinned to the
+        # official PyTorch CPU index; the project's lower bounds (torch>=2.2,
+        # torchvision>=0.17) are resolved by the `pip install -e` step below.
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install package (dev extras)
+        # `dev` pulls in pytest + ruff. We avoid the `diffusion` extra here: the
+        # diffusion engine is import-lazy and its tests are gated behind the
+        # `network`/`mps` markers we deselect, so SDXL/diffusers are not needed
+        # for the offline subset.
+        run: pip install -e ".[dev]"
+
+      - name: Compile all sources (py_compile)
+        # A fast syntax gate over the whole tree before running the slower steps.
+        run: python -m compileall -q artvid scripts tests
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Run offline test subset
+        # Skip weight-downloading (`network`) and Apple-Silicon (`mps`) tests.
+        run: pytest -m "not network and not mps" -q

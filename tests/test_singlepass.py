@@ -18,7 +18,6 @@ from artvid.pipeline.singlepass import (
     select_previous_indices,
 )
 
-
 # ---------------------------------------------------------------------------
 # select_previous_indices — long-term J selection (artistic_video.lua:159-187)
 # ---------------------------------------------------------------------------

@@ -136,8 +136,13 @@ def test_latent_reliability_all_reliable_zero_flow(torch):
 
     assert rel.shape == (1, 1, h, w)
     assert rel.dtype == torch.float32
-    # No motion -> consistent everywhere -> reliability close to 1.
-    assert torch.all(rel >= 0.9)
+    # No motion -> consistent everywhere -> interior reliability ~1. The 1-cell
+    # border falls off (Gaussian smoothing in consistency_mask + gamma erosion at
+    # the frame edge) by design ("conservative downsample + erosion", §2.4), so we
+    # assert on the interior and only require borders to stay in [0, 1].
+    assert torch.all((rel >= 0.0) & (rel <= 1.0))
+    interior = rel[..., 1:-1, 1:-1]
+    assert torch.all(interior >= 0.9)
 
 
 def test_latent_reliability_invalid_cells_zeroed(torch):

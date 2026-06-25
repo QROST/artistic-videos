@@ -71,7 +71,6 @@ import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-
 # ---------------------------------------------------------------------------
 # Pure / torch-free helpers (kept importable without torch)
 # ---------------------------------------------------------------------------
@@ -517,8 +516,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     _device.enable_mps_fallback()
 
     # --- scratch work dir ---------------------------------------------------
-    import tempfile
     import shutil
+    import tempfile
 
     if args.work_dir is not None:
         work_dir = Path(args.work_dir)

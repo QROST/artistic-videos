@@ -27,6 +27,31 @@ The algorithm, per frame ``t``:
        reliable regions — the latent analogue of the 2016 temporal loss applied
        as a hard, reliability-masked blend.
 
+    This module deepens the §2.5 loop with four §P2-M2 options, each gated by a
+    ``Config`` flag so the baseline single-prev latent path is unchanged when they
+    are off:
+
+    * **Long-term anchor** (``use_anchor``, §2.6): besides the immediate previous
+      frame, also backward-warp the *anchor* frame's latent (``anchor_index``,
+      default the first processed frame) into the current frame and combine its
+      reliability with the previous-frame reliability via
+      :func:`artvid.diffusion.latent_warp.combine_anchor_reliability`
+      (``anchor_reliability_method``). The combined multi-reference warp/reliability
+      then drives the engine init+fusion, fighting long-clip drift.
+    * **Pixel-space warp** (``warp_space='pixel'``): warp the previous *decoded*
+      RGB frame at full resolution via
+      :func:`artvid.diffusion.latent_warp.warp_previous_pixel` and VAE-re-encode it
+      (``engine.encode``) instead of warping in the coarse latent grid — more
+      accurate for small/fast motion at the cost of an extra VAE round-trip.
+    * **Noise seed strategy** (``noise_seed_mode``, §5.5): ``'fixed'`` derives one
+      generator seed from ``Config.seed`` and reuses it for every frame (coherent
+      base noise, less flicker); ``'random'`` lets each frame draw fresh noise.
+      (``'warped'`` noise is documented as a deferred refinement — see TODO.)
+    * **Cross-frame attention** (``cross_frame_attention``, §6): installs the
+      shared :class:`artvid.diffusion.cross_frame_attention.CrossFrameAttnProcessor`
+      on the UNet self-attention, records the first frame's reference K/V bank, and
+      injects it while denoising subsequent frames so appearance is shared.
+
 Each decoded frame is written via :func:`artvid.io.image.save_image` using the
 **same** output naming as the optim single-pass engine
 (:func:`artvid.pipeline.singlepass.build_out_filename`), so ``cli.cmd_run``'s
@@ -38,7 +63,12 @@ Which Phase 1 / Phase 2 modules this builds on
 * :mod:`artvid.diffusion.engine` — ``DiffusionEngine`` (SDXL + depth ControlNet +
   IP-Adapter single-frame stylizer; VAE encode/decode; ``denoise_frame``).
 * :mod:`artvid.diffusion.latent_warp` — ``warp_latent`` / ``latent_reliability``
-  (the latent-space reuse of the Phase 1 flow stack).
+  (the latent-space reuse of the Phase 1 flow stack), plus
+  ``combine_anchor_reliability`` (§2.6 prev+anchor weighting) and
+  ``warp_previous_pixel`` (the ``warp_space='pixel'`` variant).
+* :mod:`artvid.diffusion.cross_frame_attention` —
+  ``install_cross_frame_attention`` / ``remove_cross_frame_attention`` and the
+  shared ``CrossFrameAttnProcessor`` (record/inject reference-K/V bank, §6).
 * :mod:`artvid.flow.raft` — ``compute_flow_pair`` (flow between content frames).
 * :mod:`artvid.pipeline.singlepass` — reused, framework-light helpers for frame
   discovery / output naming / precomputed-vs-RAFT flow loading
@@ -109,6 +139,26 @@ DEFAULT_USE_ANCHOR = False
 #: ``Config.seed`` when >= 0 (more coherent base noise, less flicker). TODO(tuning):
 #: fixed-seed vs warped-noise vs per-frame random (docs §5.5).
 DEFAULT_SEED = None
+#: Base-noise mode across frames (docs §5.5). ``'fixed'`` reuses one seed's noise
+#: for every frame (most stable); ``'random'`` draws fresh per-frame noise.
+#: TODO(tuning): also benchmark a flow-``'warped'`` base noise on large motion.
+DEFAULT_NOISE_SEED_MODE = "fixed"
+#: Warp space (docs §2.5/§3.2). ``'latent'`` warps in the VAE latent grid (cheap);
+#: ``'pixel'`` warps the decoded RGB and re-encodes (more accurate, extra VAE pass).
+DEFAULT_WARP_SPACE = "latent"
+#: Anchor frame index for the long-term path (docs §2.6). ``-1`` => the first
+#: processed frame; otherwise an absolute content-frame index. TODO(tuning): a
+#: mid-shot keyframe may anchor long clips better than frame 0.
+DEFAULT_ANCHOR_INDEX = -1
+#: How prev+anchor reliabilities are combined (docs §2.6); forwarded to
+#: ``combine_anchor_reliability`` -> ``combine_longterm_weights``.
+DEFAULT_ANCHOR_RELIABILITY_METHOD = "closestFirst"
+#: Cross-frame (reference) self-attention (docs §6). Default off so the baseline
+#: path is unchanged. TODO(tuning): A/B flicker vs cost; ~doubles self-attn memory.
+DEFAULT_CROSS_FRAME_ATTENTION = False
+#: Which UNet self-attention layers get the cross-frame treatment
+#: ("all"|"none"|"up"|"mid"|"down"|comma-list of block-name substrings).
+DEFAULT_CROSS_FRAME_ATTENTION_LAYERS = "all"
 
 
 def _get(cfg: Any, name: str, default: Any) -> Any:
@@ -174,6 +224,46 @@ def fuse_step_set(num_steps: int, start_frac: float, end_frac: float) -> set:
     lo = max(0, int(round(start_frac * num_steps)))
     hi = min(num_steps, int(round(end_frac * num_steps)))
     return {i for i in range(lo, hi)}
+
+
+# ---------------------------------------------------------------------------
+# Cross-frame-attention layer filter (torch-free, unit-testable). Maps the
+# Config.cross_frame_attention_layers string to a predicate over
+# unet.attn_processors keys, matching install_cross_frame_attention's layer_filter
+# contract (docs §6 / cross_frame_attention.self_attention_keys).
+# ---------------------------------------------------------------------------
+
+
+def cross_frame_layer_filter(spec: str):
+    """Build a ``key -> bool`` predicate selecting UNet self-attention layers.
+
+    The ``spec`` (``Config.cross_frame_attention_layers``) selects which
+    ``attn_processors`` keys :func:`install_cross_frame_attention` applies the
+    cross-frame processor to:
+
+    * ``"all"`` (or empty) — every self-attention layer (predicate is ``None`` so
+      the installer applies to all ``attn1`` layers).
+    * ``"none"`` — no layers (``lambda: False``); equivalent to disabling.
+    * ``"up"`` / ``"mid"`` / ``"down"`` — only blocks in that UNet stage
+      (matched by the diffusers ``up_blocks`` / ``mid_block`` / ``down_blocks``
+      key prefixes).
+    * a comma-separated list of substrings (e.g. ``"up_blocks.1, mid_block"``) —
+      any key containing one of them.
+
+    Returns:
+        ``None`` for ``"all"`` (let the installer touch every self-attn layer), or
+        a predicate ``key -> bool``. Pure-python (no torch) so it is unit-testable.
+    """
+    s = (spec or "all").strip().lower()
+    if s in ("", "all"):
+        return None
+    if s == "none":
+        return lambda key: False
+    #: diffusers UNet stage -> attn_processors key prefix.
+    stage_prefix = {"up": "up_blocks", "mid": "mid_block", "down": "down_blocks"}
+    tokens = [t.strip() for t in s.split(",") if t.strip()]
+    needles = [stage_prefix.get(t, t) for t in tokens]
+    return lambda key: any(n in key.lower() for n in needles)
 
 
 # ---------------------------------------------------------------------------
@@ -326,9 +416,8 @@ def stylize_video_diffusion(
     from artvid.device import enable_mps_fallback, get_device
     from artvid.diffusion.engine import DiffusionEngine
     from artvid.diffusion.latent_warp import (
-        combine_latent_reliability,
+        combine_anchor_reliability,
         latent_reliability,
-        warp_latent,
     )
     from artvid.io.image import load_image
     from artvid.pipeline.singlepass import _content_frame_path, discover_num_images
@@ -362,14 +451,51 @@ def stylize_video_diffusion(
     )
     gamma = float(_get(config, "latent_reliability_gamma", DEFAULT_RELIABILITY_GAMMA))
     use_anchor = bool(_get(config, "use_anchor", DEFAULT_USE_ANCHOR))
+    warp_space = str(_get(config, "warp_space", DEFAULT_WARP_SPACE)).strip().lower()
+    if warp_space not in ("latent", "pixel"):
+        raise ValueError(
+            f"Config.warp_space must be 'latent' or 'pixel'; got {warp_space!r}."
+        )
+    anchor_index_cfg = int(_get(config, "anchor_index", DEFAULT_ANCHOR_INDEX))
+    anchor_method = str(
+        _get(config, "anchor_reliability_method", DEFAULT_ANCHOR_RELIABILITY_METHOD)
+    )
     steps = int(getattr(engine, "steps", 30))
     fuse_steps = fuse_step_set(steps, fuse_start, fuse_end)
 
-    # Base-noise seed strategy (docs §5.5): a fixed seed across frames gives a
-    # coherent base-noise field (less flicker). Use Config.seed when set (>= 0),
-    # else the diffusion default. TODO(tuning): try warped-noise / per-frame.
+    # Base-noise seed strategy (docs §5.5). 'fixed' (default) derives one seed from
+    # Config.seed (when >= 0) and reuses it for every frame -> a coherent base-noise
+    # field (less flicker). 'random' passes seed=None per frame so each frame draws
+    # fresh noise. ('warped' base noise is a deferred refinement; see TODO below.)
+    noise_seed_mode = str(
+        _get(config, "noise_seed_mode", DEFAULT_NOISE_SEED_MODE)
+    ).strip().lower()
+    if noise_seed_mode not in ("fixed", "random", "warped"):
+        raise ValueError(
+            "Config.noise_seed_mode must be 'fixed', 'random' or 'warped'; got "
+            f"{noise_seed_mode!r}."
+        )
     cfg_seed = _get(config, "seed", DEFAULT_SEED)
     base_seed = int(cfg_seed) if (cfg_seed is not None and int(cfg_seed) >= 0) else None
+
+    # Cross-frame (reference) self-attention (docs §6). Install the shared processor
+    # ONCE on the engine UNet; record the FIRST frame's K/V bank and inject it while
+    # denoising subsequent frames. Removed in a finally so a shared engine is left
+    # pristine. TODO(tuning): record prev vs first-frame vs both; layer subset; ramp.
+    use_cfa = bool(_get(config, "cross_frame_attention", DEFAULT_CROSS_FRAME_ATTENTION))
+    cfa_layers = str(
+        _get(config, "cross_frame_attention_layers", DEFAULT_CROSS_FRAME_ATTENTION_LAYERS)
+    )
+    cfa_proc = None
+    if use_cfa and cfa_layers.strip().lower() != "none":
+        # 'none' selects no layers => leave the UNet untouched.
+        from artvid.diffusion.cross_frame_attention import (
+            install_cross_frame_attention,
+        )
+
+        cfa_proc = install_cross_frame_attention(
+            engine.unet, layer_filter=cross_frame_layer_filter(cfa_layers)
+        )
 
     # --- frame discovery (reuse the optim engine's autodetect) -------------
     num_images = discover_num_images(config)
@@ -383,6 +509,13 @@ def stylize_video_diffusion(
     continue_with = int(getattr(config, "continue_with", 1))
     first_idx = start + continue_with - 1
     last_idx = start + num_images - 1
+
+    # Resolve the long-term anchor frame index (docs §2.6). ``anchor_index`` < 0
+    # (default) means "the first processed frame"; otherwise it is an absolute
+    # content-frame index. Clamp into the processed range so a stray value cannot
+    # point outside the sequence.
+    anchor_idx = first_idx if anchor_index_cfg < 0 else anchor_index_cfg
+    anchor_idx = min(max(anchor_idx, first_idx), last_idx)
 
     # --- style reference, encoded ONCE (frame-invariant) -------------------
     style_paths = [s.strip() for s in str(config.style_image).split(",") if s.strip()]
@@ -399,161 +532,282 @@ def stylize_video_diffusion(
     # Carry-forward state across frames.
     prev_latent: "torch.Tensor | None" = None
     prev_content_rgb: "torch.Tensor | None" = None
+    prev_rgb: "torch.Tensor | None" = None  # decoded prev output (warp_space='pixel')
     anchor_latent: "torch.Tensor | None" = None
     anchor_content_rgb: "torch.Tensor | None" = None
+    anchor_rgb: "torch.Tensor | None" = None
+    # Cross-frame-attention reference K/V bank (id(attn)->hidden_states), recorded
+    # on the anchor frame, replayed (injected) while denoising subsequent frames.
+    cfa_bank: "dict[int, torch.Tensor] | None" = None
 
     results: List[FrameResult] = []
 
-    for frame_idx in range(first_idx, last_idx + 1):
-        content_path = _content_frame_path(config, frame_idx)
-        if not content_path.is_file():
-            break
+    try:
+        for frame_idx in range(first_idx, last_idx + 1):
+            content_path = _content_frame_path(config, frame_idx)
+            if not content_path.is_file():
+                break
 
-        content_rgb = load_image(content_path)  # (3, H, W) [0,1] RGB
-        _, H, W = content_rgb.shape
-        h, w = H // vae_factor, W // vae_factor
+            content_rgb = load_image(content_path)  # (3, H, W) [0,1] RGB
+            _, H, W = content_rgb.shape
+            h, w = H // vae_factor, W // vae_factor
 
-        # Per-frame structure (ControlNet) conditioning. ``denoise_frame``
-        # requires a concrete ``control_image`` (it does not build one from
-        # ``None``), so we build it here from the content frame via the engine's
-        # own ``_build_control`` (which delegates to ``artvid.diffusion.preprocess``
-        # for the configured signal kind: depth/lineart/canny, docs §3.4). Keeping
-        # the build on the engine means the structure-signal choice stays a single
-        # config-driven decision owned by the engine/preprocess agents.
-        control_image = engine._build_control(content_rgb)
+            # Per-frame structure (ControlNet) conditioning. ``denoise_frame``
+            # requires a concrete ``control_image`` (it does not build one from
+            # ``None``), so we build it here from the content frame via the
+            # engine's own ``_build_control`` (which delegates to
+            # ``artvid.diffusion.preprocess`` for the configured signal kind:
+            # depth/lineart/canny, docs §3.4). Keeping the build on the engine
+            # means the structure-signal choice stays a single config-driven
+            # decision owned by the engine/preprocess agents.
+            control_image = engine._build_control(content_rgb)
 
-        seed = base_seed  # fixed-across-frames (docs §5.5); TODO(tuning)
+            # Noise seed (docs §5.5): 'fixed' reuses one seed for every frame (so
+            # add_noise draws the SAME base noise field -> less flicker); 'random'
+            # (and 'warped', for now) pass seed=None so each frame draws fresh
+            # noise. TODO(tuning): implement a true flow-'warped' base noise (warp
+            # the prev frame's epsilon by the flow) and A/B vs 'fixed'.
+            seed = base_seed if noise_seed_mode == "fixed" else None
 
-        if prev_latent is None:
-            # ---- anchor / first frame: plain ControlNet + IP-Adapter -------
-            latent = engine.denoise_frame(
-                content_rgb,
-                control_image=control_image,
-                style=style_ref,
-                seed=seed,
-                steps=steps,
-            )
-            used_temporal = False
-            prev_indices: List[int] = []
-            # Seed the anchor for optional long-term consistency.
-            if use_anchor:
-                anchor_latent = latent
-                anchor_content_rgb = content_rgb
-        else:
-            # ---- subsequent frame: warped-latent init + per-step fusion ----
-            prev_index = frame_idx - 1
-            backward_flow, forward_flow = _flow_pair_for(
-                config,
-                frame_idx,
-                prev_index,
-                content_rgb,
-                prev_content_rgb,
-                device,
-                flow_source,
-            )
-
-            # Backward-warp the PREVIOUS latent into the current frame's grid.
-            warp = warp_latent(
-                prev_latent,
-                backward_flow.to(device),
-                vae_factor=vae_factor,
-                image_hw=(H, W),
-            )
-            warped_latent = warp.image  # (1, C, h, w)
-
-            # Latent-grid reliability for the (prev -> current) warp.
-            reliability = latent_reliability(
-                forward_flow.to(device),
-                backward_flow.to(device),
-                warp.valid,
-                latent_hw=(h, w),
-                gamma=gamma,
-            )  # (1, 1, h, w) [0,1]
-            prev_indices = [prev_index]
-
-            # ---- optional long-term anchor (docs §2.6) --------------------
-            if use_anchor and anchor_latent is not None:
-                a_backward, a_forward = _flow_pair_for(
+            if prev_latent is None:
+                # ---- anchor / first frame: plain ControlNet + IP-Adapter ----
+                # Record the FIRST (pure-noise) frame's reference K/V bank for
+                # cross-frame attention. This is the global appearance reference
+                # every later frame injects against; it is the first PROCESSED
+                # frame, independent of the §2.6 long-term ``anchor_index`` used by
+                # the latent warp. TODO(tuning): record the previous frame each step
+                # (rolling reference) and/or both prev+anchor (concat) instead.
+                if cfa_proc is not None:
+                    cfa_proc.set_mode("record")
+                latent = engine.denoise_frame(
+                    content_rgb,
+                    control_image=control_image,
+                    style=style_ref,
+                    seed=seed,
+                    steps=steps,
+                )
+                if cfa_proc is not None:
+                    cfa_bank = cfa_proc.take_recorded()
+                    cfa_proc.set_mode("off")
+                used_temporal = False
+                prev_indices: List[int] = []
+            else:
+                # ---- subsequent frame: warped init + per-step fusion --------
+                prev_index = frame_idx - 1
+                backward_flow, forward_flow = _flow_pair_for(
                     config,
                     frame_idx,
-                    start,  # anchor is the first/start frame
+                    prev_index,
                     content_rgb,
-                    anchor_content_rgb,
+                    prev_content_rgb,
                     device,
                     flow_source,
                 )
-                a_warp = warp_latent(
-                    anchor_latent,
-                    a_backward.to(device),
+
+                # Backward-warp the PREVIOUS output into the current frame's grid.
+                # 'latent' (default): warp the prev latent directly. 'pixel': warp
+                # the prev DECODED RGB at full resolution, then VAE-re-encode it to
+                # a latent (more accurate, extra VAE pass; docs §2.5/§3.2).
+                warped_latent, valid_latent = _warp_reference(
+                    engine,
+                    prev_latent,
+                    prev_rgb,
+                    backward_flow.to(device),
+                    warp_space=warp_space,
                     vae_factor=vae_factor,
                     image_hw=(H, W),
+                    latent_hw=(h, w),
                 )
-                a_rel = latent_reliability(
-                    a_forward.to(device),
-                    a_backward.to(device),
-                    a_warp.valid,
+
+                # Latent-grid reliability for the (prev -> current) warp.
+                reliability = latent_reliability(
+                    forward_flow.to(device),
+                    backward_flow.to(device),
+                    valid_latent,
                     latent_hw=(h, w),
                     gamma=gamma,
+                )  # (N, 1, h, w) [0,1]
+                prev_indices = [prev_index]
+
+                # ---- optional long-term anchor (docs §2.6) ------------------
+                if use_anchor and anchor_latent is not None:
+                    a_backward, a_forward = _flow_pair_for(
+                        config,
+                        frame_idx,
+                        anchor_idx,
+                        content_rgb,
+                        anchor_content_rgb,
+                        device,
+                        flow_source,
+                    )
+                    a_warped, a_valid = _warp_reference(
+                        engine,
+                        anchor_latent,
+                        anchor_rgb,
+                        a_backward.to(device),
+                        warp_space=warp_space,
+                        vae_factor=vae_factor,
+                        image_hw=(H, W),
+                        latent_hw=(h, w),
+                    )
+                    a_rel = latent_reliability(
+                        a_forward.to(device),
+                        a_backward.to(device),
+                        a_valid,
+                        latent_hw=(h, w),
+                        gamma=gamma,
+                    )
+                    # Combine prev (closest) + anchor reliabilities into per-cell
+                    # weights (closest-first => the anchor only claims cells the
+                    # previous frame does not reliably see; docs §2.6).
+                    rel_prev, rel_anchor = combine_anchor_reliability(
+                        reliability, a_rel, method=anchor_method
+                    )
+                    # Fuse the two warped references into ONE (warped_latent,
+                    # reliability) pair the engine's mechanisms consume: a
+                    # weighted blend of the warped prev + warped anchor, with the
+                    # blend weight = the union of reliable cells.
+                    denom = (rel_prev + rel_anchor).clamp_min(1e-6)
+                    warped_latent = (
+                        rel_prev * warped_latent + rel_anchor * a_warped
+                    ) / denom
+                    reliability = (rel_prev + rel_anchor).clamp(0.0, 1.0)
+                    prev_indices = [prev_index, anchor_idx]
+
+                # Inject the anchor's recorded reference K/V bank for this frame's
+                # denoise (cross-frame attention shares appearance, cuts flicker).
+                if cfa_proc is not None:
+                    cfa_proc.set_reference(cfa_bank)
+                    cfa_proc.set_mode("inject")
+
+                # MECHANISM 1: init from the warped previous latent (renoised to
+                # the start timestep) in reliable regions; img2img strength keeps
+                # more of the warped init the lower it is. MECHANISM 2: per-step
+                # fusion in reliable regions over the early/mid fuse window. Both
+                # handed to the engine's single denoise loop.
+                latent = engine.denoise_frame(
+                    content_rgb,
+                    control_image=control_image,
+                    style=style_ref,
+                    init_latents=warped_latent,
+                    reliability=reliability,
+                    warped_latent=warped_latent,
+                    strength=init_strength,
+                    steps=steps,
+                    seed=seed,
+                    fuse_steps=fuse_steps,
+                    temporal_strength=temporal_strength,
                 )
-                # Combine closest-previous-frame first (the anchor only claims
-                # cells the previous frame does not reliably see).
-                rel_prev, rel_anchor = combine_latent_reliability(
-                    [reliability, a_rel], method="closestFirst"
+                if cfa_proc is not None:
+                    cfa_proc.set_mode("off")
+                used_temporal = True
+
+            # --- decode + save (same naming as the optim engine) -----------
+            out_rgb = engine.decode(latent)  # (3, H, W) [0,1] RGB
+            out_path = _output_path_for(config, frame_idx)
+            # save_image always deprocesses (it assumes a VGG-preprocessed tensor);
+            # our decoded frame is already plain RGB [0,1], so write it directly via
+            # the io.image low-level path (see _save_rgb).
+            _save_rgb(out_rgb, out_path)
+
+            results.append(
+                FrameResult(
+                    frame_idx=frame_idx,
+                    output_path=out_path,
+                    previous_indices=prev_indices,
+                    used_temporal=used_temporal,
                 )
-                # Fuse the anchor contribution into the warped target weighted by
-                # its (post-combination) reliability, then renormalize the blend
-                # weight to the union of reliable cells. This keeps a single
-                # (warped_latent, reliability) pair for the engine's mechanisms.
-                denom = (rel_prev + rel_anchor).clamp_min(1e-6)
-                warped_latent = (
-                    rel_prev * warped_latent + rel_anchor * a_warp.image
-                ) / denom
-                reliability = (rel_prev + rel_anchor).clamp(0.0, 1.0)
-                prev_indices = [prev_index, start]
-
-            # MECHANISM 1: init from the warped previous latent (renoised to the
-            # start timestep) in reliable regions; img2img strength keeps more of
-            # the warped init the lower it is. MECHANISM 2: per-step fusion in
-            # reliable regions over the early/mid fuse window. Both handed to the
-            # engine's single denoise loop.
-            latent = engine.denoise_frame(
-                content_rgb,
-                control_image=control_image,
-                style=style_ref,
-                init_latents=warped_latent,
-                reliability=reliability,
-                warped_latent=warped_latent,
-                strength=init_strength,
-                steps=steps,
-                seed=seed,
-                fuse_steps=fuse_steps,
-                temporal_strength=temporal_strength,
             )
-            used_temporal = True
 
-        # --- decode + save (same naming as the optim engine) ---------------
-        out_rgb = engine.decode(latent)  # (3, H, W) [0,1] RGB
-        out_path = _output_path_for(config, frame_idx)
-        # save_image deprocesses for a VGG-preprocessed tensor by default; our
-        # decoded frame is already plain RGB [0,1], so use the torchvision-style
-        # passthrough? No: save_image always deprocesses. We therefore write the
-        # RGB tensor directly via the io.image low-level path (see _save_rgb).
-        _save_rgb(out_rgb, out_path)
-
-        results.append(
-            FrameResult(
-                frame_idx=frame_idx,
-                output_path=out_path,
-                previous_indices=prev_indices,
-                used_temporal=used_temporal,
+            # --- carry state forward ---------------------------------------
+            prev_latent = latent
+            prev_content_rgb = content_rgb
+            # Keep the decoded RGB only when the pixel-warp path needs it next
+            # frame (avoids holding a full-res RGB tensor in the latent path).
+            prev_rgb = out_rgb if warp_space == "pixel" else None
+            # Anchor: capture the designated anchor frame's outputs once.
+            if use_anchor and frame_idx == anchor_idx:
+                anchor_latent = latent
+                anchor_content_rgb = content_rgb
+                anchor_rgb = out_rgb if warp_space == "pixel" else None
+    finally:
+        # Leave a (possibly shared) engine's UNet pristine: undo the cross-frame
+        # attention install regardless of how the loop exits.
+        if cfa_proc is not None:
+            from artvid.diffusion.cross_frame_attention import (
+                remove_cross_frame_attention,
             )
-        )
 
-        # Carry state forward.
-        prev_latent = latent
-        prev_content_rgb = content_rgb
+            remove_cross_frame_attention(engine.unet)
 
     return results
+
+
+def _warp_reference(
+    engine: "DiffusionEngine",
+    ref_latent: "torch.Tensor",
+    ref_rgb: "torch.Tensor | None",
+    backward_flow: "torch.Tensor",
+    *,
+    warp_space: str,
+    vae_factor: int,
+    image_hw: tuple,
+    latent_hw: tuple,
+) -> "tuple[torch.Tensor, torch.Tensor]":
+    """Backward-warp a reference output into the current frame, returning a latent.
+
+    Dispatches on ``warp_space`` (docs §2.5/§3.2):
+
+    * ``'latent'`` — warp ``ref_latent`` directly in the VAE latent grid via
+      :func:`artvid.diffusion.latent_warp.warp_latent` (cheap, no extra VAE pass).
+    * ``'pixel'`` — warp the reference's *decoded* RGB ``ref_rgb`` at full image
+      resolution via :func:`artvid.diffusion.latent_warp.warp_previous_pixel`, then
+      VAE-re-encode the warped RGB with ``engine.encode`` (more accurate for small/
+      fast motion; costs one extra VAE encode here + a decode when ``ref_rgb`` was
+      produced). The out-of-border ``valid`` mask is downsampled to the latent grid
+      so :func:`latent_reliability` can AND it in like the latent path.
+
+    Args:
+        engine: The diffusion engine (used for ``encode`` in the pixel path).
+        ref_latent: Reference latent ``(N, C, h, w)`` (the prev/anchor latent).
+        ref_rgb: Reference decoded RGB ``(3, H, W)`` — required for ``'pixel'``.
+        backward_flow: RAFT backward flow (current -> reference) ``(2, H, W)``.
+        warp_space: ``'latent'`` | ``'pixel'``.
+        vae_factor: VAE downsample factor.
+        image_hw: ``(H, W)`` image resolution.
+        latent_hw: ``(h, w)`` latent resolution.
+
+    Returns:
+        ``(warped_latent, valid_latent)`` — the warped reference latent and the
+        ``(N, 1, h, w)`` out-of-border validity mask for the latent grid.
+    """
+    from artvid.diffusion.latent_warp import warp_latent, warp_previous_pixel
+
+    if warp_space == "pixel":
+        import torch.nn.functional as F
+
+        if ref_rgb is None:
+            raise ValueError(
+                "warp_space='pixel' requires the reference's decoded RGB; "
+                "prev_rgb/anchor_rgb was not carried forward."
+            )
+        pwarp = warp_previous_pixel(ref_rgb, backward_flow, vae_factor=vae_factor)
+        warped_latent = engine.encode(pwarp.image)  # (1, C, h, w)
+        # Downsample the full-res pixel valid mask to the latent grid (conservative:
+        # a latent cell is valid only where its whole f x f block was in-border).
+        valid_px = pwarp.valid
+        if valid_px.dim() == 3:  # (1, H, W) -> (1, 1, H, W)
+            valid_px = valid_px.unsqueeze(0)
+        valid_lat = F.adaptive_avg_pool2d(
+            valid_px.float(), output_size=latent_hw
+        )
+        valid_latent = valid_lat >= (1.0 - 1e-6)
+        return warped_latent, valid_latent
+
+    warp = warp_latent(
+        ref_latent, backward_flow, vae_factor=vae_factor, image_hw=image_hw
+    )
+    return warp.image, warp.valid
 
 
 def _save_rgb(image_rgb: "torch.Tensor", path: str) -> None:

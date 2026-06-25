@@ -187,6 +187,46 @@ class Config:
     use_anchor: bool = False  # long-term anchor warp (combine_longterm_weights); §2.6
     vae_factor: int = 8  # VAE spatial downsample (SDXL/SD1.5 = 8); change only if model differs
 
+    # --- Phase 2 deepening toggles (docs/07-phase2-design.md §P2-M2, §5.5, §2.6) ---
+    # Extended/reference cross-frame self-attention in the UNet (a.k.a.
+    # cross-frame / reference attention): each frame attends to the anchor (and/or
+    # previous) frame's keys/values to share appearance and cut flicker. Consumed
+    # lazily by artvid.diffusion.engine; default off so the baseline path is
+    # unchanged. TODO(tuning): on M5 Max, A/B with/without and measure flicker vs
+    # cost; cross-attn roughly doubles self-attn memory per enabled layer.
+    cross_frame_attention: bool = False
+    # Which UNet self-attention layers get the cross-frame treatment.
+    # "all"  => every self-attention (transformer) block;
+    # "none" => disable (equivalent to cross_frame_attention=False);
+    # "up"/"mid"/"down" => only blocks in that UNet stage;
+    # or a comma-separated list of block-name substrings (e.g. "up_blocks.1").
+    # Parsed/matched downstream in the engine. TODO(tuning): mid+up-only is often
+    # enough and cheaper than "all"; verify on M5 Max.
+    cross_frame_attention_layers: str = "all"
+
+    # Base-noise strategy across frames (§5.5). Controls the epsilon used to
+    # add_noise to each frame's init latents:
+    #   "fixed"  => reuse one fixed seed's noise for every frame (most stable;
+    #               recommended baseline);
+    #   "warped" => warp the previous frame's base noise by the flow so noise
+    #               tracks motion (can improve consistency on large motion);
+    #   "random" => fresh per-frame noise (most diverse, least stable).
+    # The `seed` field above seeds the generator. TODO(tuning): compare fixed vs
+    # warped for flicker on M5 Max.
+    noise_seed_mode: str = "fixed"
+
+    # Long-term anchor selection (used only when use_anchor; §2.6).
+    # -1 => use the first processed frame as the anchor; otherwise an absolute
+    # frame index into the sequence. TODO(tuning): a mid-shot keyframe may anchor
+    # better than the first frame for long clips.
+    anchor_index: int = -1
+    # How long-term (prev + anchor) reliability weights are combined; forwarded
+    # verbatim to artvid.flow.consistency.combine_longterm_weights:
+    #   "normalize"    => renormalize overlapping weights;
+    #   "closestFirst" => prefer the temporally closest (prev) weight, fall back
+    #                     to anchor. Mirrors combine_flow_weights_method semantics.
+    anchor_reliability_method: str = "closestFirst"  # normalize|closestFirst
+
     # --- Modernization: replaces -proto_file/-model_file (loadcaffe) ---
     # 'torchvision' uses torchvision VGG-19 weights (RGB, ImageNet norm);
     # any other value is treated as a path to caffe VGG-19 weights (BGR mean).

@@ -24,7 +24,12 @@ Phase 1 optical-flow temporal-consistency idea into latent space:
   a flow-warped latent to the correct noise level and fuse it between denoise
   steps (``docs/07`` §2.5 mechanisms 1 & 2).
 * ``denoise_frame`` — the K-step inner loop for one frame, accepting an optional
-  warped-latent init + per-step reliability-masked fusion.
+  reliability-masked warped-latent init (mechanism 1) + per-step reliability-masked
+  fusion (mechanism 2).
+* ``install_cross_frame_attention`` / ``remove_cross_frame_attention`` /
+  ``record_cross_frame_reference`` / ``set_cross_frame_reference`` — the optional,
+  OFF-by-default cross-frame self-attention hook (docs §2.5 alt / §6, P2-M4),
+  wiring :mod:`artvid.diffusion.cross_frame_attention` onto ``self.unet``.
 
 Which Phase 1 modules this builds on
 ------------------------------------
@@ -106,6 +111,18 @@ DEFAULT_SCHEDULER = "euler"
 #: backbone differs. Exposed so ``latent_warp`` can rescale flow to the latent grid.
 DEFAULT_VAE_FACTOR = 8
 
+#: Cross-frame self-attention (docs §2.5 alt / §6, P2-M4). OFF by default — the
+#: baseline flow-warp path is unchanged unless explicitly enabled.
+DEFAULT_CROSS_FRAME_ATTENTION = False
+#: Which UNet self-attention layers get the cross-frame treatment:
+#: ``all`` | ``none`` | ``up`` | ``mid`` | ``down`` | comma-separated block-name
+#: substrings (e.g. ``"mid_block,up_blocks.1"``). Parsed by :func:`_cfa_layer_filter`.
+#: TODO(tuning): mid+up-only is often enough and cheaper than ``all`` (docs §6).
+DEFAULT_CROSS_FRAME_ATTENTION_LAYERS = "all"
+#: Blend between cross-frame-attended and self-only output (1.0 = full cross-frame).
+#: TODO(tuning): 0.6-1.0 sweep; too high ghosts the reference into moving regions.
+DEFAULT_CROSS_FRAME_ATTENTION_MIX = 1.0
+
 
 def _get(cfg: Any, name: str, default: Any) -> Any:
     """Read ``cfg.<name>`` falling back to ``default``.
@@ -170,6 +187,9 @@ class DiffusionEngine:
         guidance_scale: float = DEFAULT_GUIDANCE_SCALE,
         scheduler: str = DEFAULT_SCHEDULER,
         vae_factor: int = DEFAULT_VAE_FACTOR,
+        cross_frame_attention: bool = DEFAULT_CROSS_FRAME_ATTENTION,
+        cross_frame_attention_layers: str = DEFAULT_CROSS_FRAME_ATTENTION_LAYERS,
+        cross_frame_attention_mix: float = DEFAULT_CROSS_FRAME_ATTENTION_MIX,
         device: str | None = None,
     ) -> None:
         self.base_model = base_model
@@ -185,7 +205,14 @@ class DiffusionEngine:
         self.guidance_scale = float(guidance_scale)
         self.scheduler_name = scheduler
         self.vae_factor = int(vae_factor)
+        self.cross_frame_attention = bool(cross_frame_attention)
+        self.cross_frame_attention_layers = str(cross_frame_attention_layers)
+        self.cross_frame_attention_mix = float(cross_frame_attention_mix)
         self._prefer_device = device
+
+        # Live cross-frame-attention processor (None until installed). Driven by
+        # the install/record/set-reference methods; OFF by default.
+        self._cfa_processor: Any = None
 
         # Resolved on load().
         self.device: "torch.device | None" = None
@@ -219,6 +246,15 @@ class DiffusionEngine:
             guidance_scale=_get(cfg, "guidance_scale", DEFAULT_GUIDANCE_SCALE),
             scheduler=_get(cfg, "diff_scheduler", DEFAULT_SCHEDULER),
             vae_factor=_get(cfg, "vae_factor", DEFAULT_VAE_FACTOR),
+            cross_frame_attention=_get(
+                cfg, "cross_frame_attention", DEFAULT_CROSS_FRAME_ATTENTION
+            ),
+            cross_frame_attention_layers=_get(
+                cfg, "cross_frame_attention_layers", DEFAULT_CROSS_FRAME_ATTENTION_LAYERS
+            ),
+            cross_frame_attention_mix=_get(
+                cfg, "cross_frame_attention_mix", DEFAULT_CROSS_FRAME_ATTENTION_MIX
+            ),
             device=_get(cfg, "device", None),
         )
 
@@ -450,6 +486,124 @@ class DiffusionEngine:
         self._ensure_loaded()
         return self.scheduler.add_noise(latent, noise, timestep)
 
+    # -- cross-frame self-attention hook (docs §2.5 alt / §6, P2-M4) --------
+    #
+    # OFF by default. This wires the optional cross-frame (extended/reference)
+    # self-attention processor from :mod:`artvid.diffusion.cross_frame_attention`
+    # onto ``self.unet``. It is *complementary* to the flow-warp path: it couples
+    # the current frame to a reference (prev/anchor) frame's keys/values inside the
+    # UNet self-attention rather than via an explicit latent warp. ``video.py``
+    # drives the per-frame record→inject protocol through these methods so it never
+    # has to import the processor module or reach into ``self.unet`` directly.
+
+    def _cfa_layer_filter(self):
+        """Build a ``key -> bool`` predicate from ``cross_frame_attention_layers``.
+
+        Maps the config string to a predicate over ``unet.attn_processors`` keys
+        (dotted module paths). ``"all"``/empty -> no filter (every self-attention
+        layer); ``"none"`` -> match nothing; ``"up"``/``"mid"``/``"down"`` ->
+        the matching UNet stage (``up_blocks``/``mid_block``/``down_blocks``);
+        otherwise a comma-separated list of block-name substrings, any of which
+        matching the key selects the layer.
+
+        TODO(tuning): which subset best trades flicker-reduction vs ghosting/cost
+        is hardware/content dependent (docs §6); mid+up-only is a common cheaper
+        sweet spot. Verify on the M5 Max.
+        """
+        spec = (self.cross_frame_attention_layers or "all").strip().lower()
+        if spec in ("", "all"):
+            return None  # install on every self-attention layer
+        if spec == "none":
+            return lambda key: False
+        stage_prefix = {
+            "up": "up_blocks",
+            "mid": "mid_block",
+            "down": "down_blocks",
+        }
+        if spec in stage_prefix:
+            prefix = stage_prefix[spec]
+            return lambda key: key.startswith(prefix)
+        substrings = [s.strip() for s in spec.split(",") if s.strip()]
+        return lambda key: any(sub in key for sub in substrings)
+
+    def install_cross_frame_attention(self, *, force: bool = False) -> Any:
+        """Install the shared cross-frame self-attention processor on ``self.unet``.
+
+        No-op (returns ``None``) when ``self.cross_frame_attention`` is False and
+        ``force`` is not set, so callers can invoke it unconditionally and keep the
+        baseline path untouched. Idempotent: a second call returns the live
+        processor without re-installing.
+
+        Returns the live :class:`CrossFrameAttnProcessor` (drive it per frame via
+        :meth:`record_cross_frame_reference` / :meth:`set_cross_frame_reference` /
+        :meth:`set_cross_frame_mode`), or ``None`` when disabled.
+        """
+        if not (self.cross_frame_attention or force):
+            return None
+        if self._cfa_processor is not None:
+            return self._cfa_processor
+
+        self._ensure_loaded()
+        from artvid.diffusion.cross_frame_attention import (
+            install_cross_frame_attention as _install,
+        )
+
+        self._cfa_processor = _install(
+            self.unet,
+            mix=self.cross_frame_attention_mix,
+            layer_filter=self._cfa_layer_filter(),
+        )
+        # Start inert: installing must not change output until the video loop
+        # explicitly records/injects a reference (anchor frame stays a plain gen).
+        self._cfa_processor.set_mode("off")
+        return self._cfa_processor
+
+    def remove_cross_frame_attention(self) -> None:
+        """Restore the UNet's original attention processors. Safe in a ``finally``.
+
+        Reverses :meth:`install_cross_frame_attention`; no-op if nothing was
+        installed (or if the engine never loaded).
+        """
+        if self._cfa_processor is None:
+            return
+        from artvid.diffusion.cross_frame_attention import (
+            remove_cross_frame_attention as _remove,
+        )
+
+        if self.pipe is not None:
+            _remove(self.unet)
+        self._cfa_processor = None
+
+    def set_cross_frame_mode(self, mode: str) -> None:
+        """Set the processor mode: ``"off"`` | ``"record"`` | ``"inject"``.
+
+        No-op when cross-frame attention is not installed.
+        """
+        if self._cfa_processor is not None:
+            self._cfa_processor.set_mode(mode)
+
+    def record_cross_frame_reference(self) -> "dict | None":
+        """Take the reference K/V bank captured during the last ``"record"`` pass.
+
+        Call after denoising the reference frame (anchor or prev) in ``"record"``
+        mode; hand the returned bank to :meth:`set_cross_frame_reference` before the
+        next frame's ``"inject"`` pass. Returns ``None`` when not installed.
+
+        TODO(tuning): record the *prev* frame (local coherence) vs the *anchor*
+        (anti-drift) vs both — the video loop chooses; see docs §2.6 / §6.
+        """
+        if self._cfa_processor is None:
+            return None
+        return self._cfa_processor.take_recorded()
+
+    def set_cross_frame_reference(self, bank: "dict | None") -> None:
+        """Install the reference bank used in ``"inject"`` mode (or clear with None).
+
+        No-op when cross-frame attention is not installed.
+        """
+        if self._cfa_processor is not None:
+            self._cfa_processor.set_reference(bank)
+
     # -- text / style conditioning -----------------------------------------
 
     def encode_style(self, style_image: "str | Path | torch.Tensor") -> StyleReference:
@@ -598,7 +752,9 @@ class DiffusionEngine:
         so the video module can:
 
           * start from a flow-**warped previous latent** (``init_latents`` +
-            ``strength < 1``) — mechanism 1; and
+            ``strength < 1``), optionally **reliability-masked** so unreliable
+            (disoccluded) regions fall back to fresh noise (``reliability``) —
+            mechanism 1; and
           * **fuse** the warped latent back in at selected steps in reliable
             regions (``warped_latent`` + ``reliability`` + ``fuse_steps`` +
             ``temporal_strength``) — mechanism 2.
@@ -615,7 +771,11 @@ class DiffusionEngine:
                 IP-Adapter — discouraged; the style comes from it).
             init_latents: Optional latent to renoise+denoise (mechanism 1).
             reliability: ``(1, 1, h, w)`` float ``[0,1]`` latent-grid reliability
-                mask (from ``latent_warp.latent_reliability``), used by the fusion.
+                mask (from ``latent_warp.latent_reliability``). When passed with
+                ``init_latents`` it drives the mechanism-1 *masked init* (reliable
+                regions start from the renoised warp, unreliable regions from fresh
+                noise, docs §2.5); it also gates the mechanism-2 per-step fusion.
+                Broadcasts over the latent channel axis.
             warped_latent: ``(1, C, h, w)`` flow-warped previous latent, the fusion
                 target (mechanism 2).
             strength: img2img strength in ``[0,1]`` (see :meth:`stylize`).
@@ -670,15 +830,36 @@ class DiffusionEngine:
         ).to(device)
 
         # --- initial latent ---
+        # Pure-noise start scaled to the scheduler's initial sigma (Euler) /
+        # convention. ``init_noise_sigma`` is 1.0 for DDIM and the max sigma for
+        # Euler; multiplying covers both. Reused below as the unreliable-region
+        # fallback so the masked init never starts from off-manifold values.
+        sigma_init = self.scheduler.init_noise_sigma
+        fresh_init = noise * sigma_init
+
         if init_latents is not None:
             init = init_latents.to(device=device, dtype=dtype)
             t0 = timesteps[0]
-            latents = self.scheduler.add_noise(init, noise, t0)
+            # Renoise the warped previous latent to the start timestep so it
+            # lives on the scheduler's manifold at the first denoise step.
+            renoised = self.scheduler.add_noise(init, noise, t0)
+
+            if reliability is not None:
+                # --- mechanism 1: RELIABILITY-MASKED warped-latent init ---
+                # docs/07 §2.5: start from the warped previous latent where the
+                # flow is reliable, and fall back toward a fresh-noise init where
+                # it is not (disocclusions / motion boundaries), so unreliable
+                # regions are re-synthesized from scratch instead of inheriting a
+                # bogus warp. ``reliability`` is (1,1,h,w) in [0,1]; it broadcasts
+                # over the latent channel axis. Resolves docs/06 #15 — the init
+                # was previously a plain (mask-free) add_noise.
+                rel = reliability.to(device=device, dtype=dtype)
+                latents = rel * renoised + (1.0 - rel) * fresh_init
+            else:
+                # No reliability mask: plain warped-init (img2img) path.
+                latents = renoised
         else:
-            # Pure-noise start scaled to the scheduler's initial sigma (Euler) /
-            # convention. ``init_noise_sigma`` is 1.0 for DDIM and the max sigma
-            # for Euler; multiplying covers both.
-            latents = noise * self.scheduler.init_noise_sigma
+            latents = fresh_init
 
         do_cfg = self.guidance_scale > 1.0
 

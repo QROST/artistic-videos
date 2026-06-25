@@ -4,8 +4,17 @@ out*.png
 *.jpg
 *.prototxt*
 *.caffemodel
-models/
-!models/download_models.sh
+/models/
+!/models/download_models.sh
 deepflow2-static
 deepmatching-static
 consistencyChecker/consistencyChecker
+
+# Python (artvid)
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+.venv/

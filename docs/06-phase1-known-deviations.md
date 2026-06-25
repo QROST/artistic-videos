@@ -36,6 +36,29 @@
 
 ## 处理优先级
 
-- **运行时验证前必做**：在 M5 Max 上 `pip install -e ".[dev]"` 后跑 `pytest`（确认 41 个 torch 单测通过）。
+- **运行时验证前必做**：在 M5 Max 上 `pip install -e ".[dev]"` 后跑 `pytest`（确认 torch 单测通过）。
 - **建议在进入 M2 前修**：#4（越界 seed）、#5/#7（注释与命名，低成本）。
 - **可延后**：#1/#2/#3（仅在需要严格数值复刻时）。
+
+## M2/M3/M4（管线与 CLI）
+
+M2、M3、M4 三道代码审查闸门均通过（M4 初次发现 1 个 blocking，已修复，见下）。
+
+8. **`artvid run` 默认调用崩溃（cli.py，blocking → 已修复）**
+   `run` 复用 `stylize` 的 `--start-number`（默认 `None`），光流预计算分支把 `None` 直接传入 `_compute_flow_for_run` → `TypeError`。已改为 `start_number=args.start_number or 1`。
+
+9. **`continue_with>1` 续跑首帧初始化错误（singlepass.py，major → 已修复）**
+   旧版按 `frameIdx > start_number` 门控 prevWarped/prev 初始化；原实现按 `is_first` 门控，导致续跑（`continue_with>1`）的首个迭代帧本应 warp 上一输出却回退到 random。已改为按 `frame_idx > start_number` 门控（默认 `continue_with=1` 路径本就正确）。
+
+10. **多遍默认值 parity（multipass.py / config.py，major，未改 — 见说明）**
+    旧 `artistic_video_multiPass.lua` 的 `temporal_weight` 默认 `5e2`、`num_iterations` 默认 `100`（每遍）；共享 `Config` 沿用单遍默认 `1e3` 与 `(2000,1000)`。因 `Config` 为单/多遍共享，**未改默认值以免影响单遍**。用法文档与 docstring 已提示：跑多遍时显式传 `--temporal-weight 5e2 --num-iterations 100`。若后续决定为多遍提供独立默认，应在 CLI `--multipass` 分支按「用户未显式覆盖」时注入。
+
+11. **时序 mask 额外 AND warp 有效性（singlepass.py，minor，刻意保留）**
+    新版把可靠性 mask 再乘以 warp 的 `valid`（遮挡区），旧 `processFlowWeights` 未这样做。理由正当（被遮挡像素确实不可靠），已在代码注释；属刻意的合理偏差。
+
+12. **`docs/usage.md` 示例风格图路径（minor → 已修复）**
+    示例命令把风格图写成 `style/seated-nude.jpg`，仓库实际位于 `example/seated-nude.jpg`。已订正。
+
+### 本轮已直接修复
+
+#8（blocking）、#9（major）、#12（minor）已在提交中修复。#10/#11 为刻意保留/文档化的 parity 取舍。

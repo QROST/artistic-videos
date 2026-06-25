@@ -6,13 +6,26 @@ Dispatches the three subcommands described in ``docs/01-architecture.md`` §3.9:
                 for adjacent (and long-term) frame pairs. **Replaces
                 ``makeOptFlow.sh`` + ``run-deepflow.sh`` + the C++
                 ``consistencyChecker``** (see ``docs/02-migration-map.md`` §1).
-* ``stylize`` — per-frame style transfer (single/multi pass). *Stub until M2–M3.*
+* ``stylize`` — per-frame style transfer (single/multi pass). Dispatches to
+                :func:`artvid.pipeline.singlepass.stylize_video` (default) or
+                :func:`artvid.pipeline.multipass.stylize_video_multipass`
+                (``--multipass`` / ``--passes``). Ports the CLI front-end of
+                ``artistic_video.lua`` / ``artistic_video_multiPass.lua``
+                (the ``cmd:option`` parsing + main-loop entry; see
+                ``docs/02-migration-map.md`` §1).
 * ``run``     — end-to-end ``video → stylized video`` (replaces
-                ``stylizeVideo.sh``). *Stub until M4.*
+                ``stylizeVideo.sh``): extract frames (:mod:`artvid.io.video`),
+                compute flow (``flow`` logic / :mod:`artvid.flow`), stylize,
+                re-encode (:mod:`artvid.io.video`).
 
-Only ``flow`` is implemented in this phase (milestone **M1**); ``stylize`` and
-``run`` raise :class:`NotImplementedError` pointing at the milestone that lands
-them. ``main`` parses ``argv``, selects a subcommand and dispatches.
+``flow`` lands in milestone **M1**; ``stylize`` (single/multi pass) in **M2/M3**
+and ``run`` (end-to-end) in **M4**. ``main`` parses ``argv``, selects a
+subcommand and dispatches.
+
+The ``--engine`` flag selects the style-transfer engine. ``optim`` (the Phase 1
+default) is the L-BFGS/Adam optimization method ported here; ``diffusion`` is
+reserved for Phase 2 and the ``stylize`` / ``run`` handlers raise a clear "not
+implemented in Phase 1" error when it is selected.
 
 The ``flow`` subcommand wires together the already-implemented flow modules:
 
@@ -292,47 +305,533 @@ def cmd_flow(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Stub subcommands (later milestones)
+# Config construction (CLI flags -> artvid.config.Config)
+# ---------------------------------------------------------------------------
+
+def _engine_guard(args: argparse.Namespace) -> None:
+    """Raise a clear Phase-1 error when ``--engine diffusion`` is selected.
+
+    The diffusion engine is a Phase 2 deliverable; only the ``optim`` engine
+    (the ported L-BFGS/Adam optimization method) exists in Phase 1.
+    """
+    if getattr(args, "engine", "optim") == "diffusion":
+        raise NotImplementedError(
+            "--engine diffusion is not implemented in Phase 1. Use "
+            "--engine optim (the default), the ported L-BFGS/Adam optimization "
+            "method. The diffusion engine is a Phase 2 deliverable."
+        )
+
+
+# CLI-flag attribute name -> Config field name. Only attributes that are present
+# (not None) on the namespace are applied, so unset flags keep Config defaults.
+_STYLIZE_CONFIG_MAP: dict[str, str] = {
+    "style_blend_weights": "style_blend_weights",
+    "num_images": "num_images",
+    "start_number": "start_number",
+    "continue_with": "continue_with",
+    "number_format": "number_format",
+    # flow (single-pass) patterns
+    "flow_pattern": "flow_pattern",
+    "flow_weight_pattern": "flow_weight_pattern",
+    "flow_relative_indices": "flow_relative_indices",
+    "use_flow_every": "use_flow_every",
+    "invert_flow_weights": "invert_flow_weights",
+    # flow (multi-pass) patterns
+    "forward_flow_pattern": "forward_flow_pattern",
+    "backward_flow_pattern": "backward_flow_pattern",
+    "forward_flow_weight_pattern": "forward_flow_weight_pattern",
+    "backward_flow_weight_pattern": "backward_flow_weight_pattern",
+    # multi-pass options
+    "blend_weight": "blend_weight",
+    "blend_weight_last_pass": "blend_weight_last_pass",
+    "use_temporal_loss_after": "use_temporal_loss_after",
+    "passes": "num_passes",
+    "continue_with_pass": "continue_with_pass",
+    # optimization
+    "content_weight": "content_weight",
+    "style_weight": "style_weight",
+    "temporal_weight": "temporal_weight",
+    "tv_weight": "tv_weight",
+    "temporal_criterion": "temporal_criterion",
+    "num_iterations": "num_iterations",
+    "tol_loss_relative": "tol_loss_relative",
+    "tol_loss_relative_interval": "tol_loss_relative_interval",
+    "normalize_gradients": "normalize_gradients",
+    "init": "init",
+    "optimizer": "optimizer",
+    "learning_rate": "learning_rate",
+    # output
+    "print_iter": "print_iter",
+    "save_iter": "save_iter",
+    "output_image": "output_image",
+    "output_folder": "output_folder",
+    "save_init": "save_init",
+    # model / other
+    "style_scale": "style_scale",
+    "pooling": "pooling",
+    "seed": "seed",
+    "content_layers": "content_layers",
+    "style_layers": "style_layers",
+    "combine_flow_weights_method": "combine_flow_weights_method",
+    "vgg_weights": "vgg_weights",
+    "device": "device",
+}
+
+
+def build_config(args: argparse.Namespace):
+    """Construct a :class:`artvid.config.Config` from parsed CLI ``args``.
+
+    Maps the ``stylize`` / ``run`` flags onto Config fields (positional
+    ``frames``→``content_pattern`` and ``style``→``style_image``), applying only
+    the flags the user actually provided so unset options fall back to the legacy
+    Config defaults. ``--args`` legacy parameter files are layered first (lowest
+    priority) via :func:`artvid.config.load_args_file` so explicit CLI flags win.
+
+    The multi-pass ``temporal_weight`` default (5e2, vs single-pass 1e3) is
+    applied only when the user did not pass ``--temporal-weight`` and the run is
+    multi-pass (mirrors ``docs/02-migration-map.md`` §3).
+    """
+    from artvid.config import Config, load_args_file
+
+    overrides: dict[str, object] = {}
+
+    # 1. Legacy -args file(s), lowest priority.
+    for args_file in getattr(args, "args_file", None) or []:
+        overrides.update(load_args_file(args_file))
+
+    # 2. Positionals.
+    if getattr(args, "frames", None) is not None:
+        overrides["content_pattern"] = args.frames
+    if getattr(args, "style", None) is not None:
+        overrides["style_image"] = args.style
+
+    # 3. Explicit flags (only those the user set, i.e. not None).
+    for attr, field_name in _STYLIZE_CONFIG_MAP.items():
+        if not hasattr(args, attr):
+            continue
+        value = getattr(args, attr)
+        if value is None:
+            continue
+        overrides[field_name] = value
+
+    # Multi-pass temporal_weight default differs from single-pass.
+    multipass = bool(getattr(args, "multipass", False)) or (
+        getattr(args, "passes", None) is not None
+    )
+    if multipass and "temporal_weight" not in overrides:
+        overrides["temporal_weight"] = 5e2
+
+    return Config(**overrides)
+
+
+def _flow_source(args: argparse.Namespace) -> str:
+    """Resolve the pipeline ``flow_source`` ("auto" | "precomputed" | "raft")."""
+    return getattr(args, "flow_source", None) or "auto"
+
+
+# ---------------------------------------------------------------------------
+# `stylize` subcommand
 # ---------------------------------------------------------------------------
 
 def cmd_stylize(args: argparse.Namespace) -> int:
-    """Per-frame style transfer — **not yet implemented** (milestones M2–M3).
+    """Per-frame style transfer (single- or multi-pass).
 
-    Will drive :mod:`artvid.pipeline.singlepass` (single pass) and
-    :mod:`artvid.pipeline.multipass` (``--passes`` / ``--multipass``), porting
-    the main frame loop of ``artistic_video.lua`` /
-    ``artistic_video_multiPass.lua``.
+    Ports the CLI front-end of ``artistic_video.lua`` /
+    ``artistic_video_multiPass.lua``: builds a :class:`~artvid.config.Config`
+    from the CLI flags and dispatches to the matching pipeline:
 
-    Raises:
-        NotImplementedError: Always, until the M2/M3 pipelines land.
+    * default → :func:`artvid.pipeline.singlepass.stylize_video` (M2);
+    * ``--multipass`` / ``--passes N`` →
+      :func:`artvid.pipeline.multipass.stylize_video_multipass` (M3).
+
+    Device selection goes through :mod:`artvid.device` (via ``Config.device`` /
+    ``--device``), replacing the legacy ``-gpu`` / ``-backend`` options.
+
+    Args:
+        args: Parsed CLI namespace (see :func:`build_parser`).
+
+    Returns:
+        Process exit code (``0`` on success).
     """
-    raise NotImplementedError(
-        "`artvid stylize` is not implemented yet. The single-pass pipeline "
-        "lands in milestone M2 (artvid/pipeline/singlepass.py) and the "
-        "multi-pass pipeline in M3 (artvid/pipeline/multipass.py). "
-        "Use `artvid flow ...` (M1) to precompute optical flow in the meantime."
+    _engine_guard(args)
+
+    config = build_config(args)
+    flow_source = _flow_source(args)
+    multipass = bool(args.multipass) or (args.passes is not None)
+
+    if multipass:
+        from artvid.pipeline.multipass import stylize_video_multipass
+
+        results = stylize_video_multipass(config, flow_source=flow_source)
+        print(
+            f"[stylize] multi-pass done: {len(results)} (frame, pass) result(s), "
+            f"{config.num_passes} pass(es)."
+        )
+    else:
+        from artvid.pipeline.singlepass import stylize_video
+
+        results = stylize_video(config, flow_source=flow_source)
+        print(f"[stylize] single-pass done: {len(results)} frame(s) stylized.")
+
+    if args.verbose:
+        for r in results:
+            print(f"  {r.output_path}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# `run` subcommand (end-to-end, replaces stylizeVideo.sh)
+# ---------------------------------------------------------------------------
+
+def _compute_flow_for_run(
+    content_pattern: str,
+    flow_dir: Path,
+    *,
+    start_number: int,
+    num_images: int,
+    steps,
+    smooth_sigma: float,
+    mask_ext: str,
+    device,
+    overwrite: bool,
+    verbose: bool,
+) -> None:
+    """Compute forward/backward flow + reliability for the extracted frames.
+
+    Thin reuse of the ``flow`` subcommand machinery (the same RAFT +
+    consistency pipeline driven by :func:`cmd_flow`), invoked in-process so
+    ``run`` does not shell out to itself. Mirrors the
+    ``bash makeOptFlow.sh ...`` step of ``stylizeVideo.sh:81``.
+    """
+    flow_args = argparse.Namespace(
+        frames=content_pattern,
+        out=str(flow_dir),
+        start_number=start_number,
+        num_images=num_images,
+        steps=list(steps),
+        smooth_sigma=smooth_sigma,
+        mask_ext=mask_ext,
+        device=None,  # cmd_flow re-derives via artvid.device; keep autodetect
+        overwrite=overwrite,
+        verbose=verbose,
     )
+    # cmd_flow handles its own device selection through artvid.device.
+    cmd_flow(flow_args)
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    """End-to-end ``video → stylized video`` — **not yet implemented** (milestone M4).
+    """End-to-end ``video → stylized video`` (replaces ``stylizeVideo.sh``).
 
-    Will chain frame extraction (:mod:`artvid.io.video`), ``flow`` and
-    ``stylize`` and re-encode, replacing ``stylizeVideo.sh``.
+    Ports the orchestration of ``stylizeVideo.sh``:
 
-    Raises:
-        NotImplementedError: Always, until the M4 end-to-end pipeline lands.
+    1. **extract frames** from the input video with
+       :func:`artvid.io.video.extract_frames` (``stylizeVideo.sh:58-64``);
+    2. **compute optical flow** + reliability with the RAFT/consistency pipeline
+       (``flow`` logic; replaces ``makeOptFlow.sh`` at ``stylizeVideo.sh:81``) —
+       skipped with ``--no-flow``;
+    3. **stylize** the frame sequence single- or multi-pass
+       (``stylizeVideo.sh:84-95``), wiring the precomputed flow patterns;
+    4. **re-encode** the stylized frames into a video with
+       :func:`artvid.io.video.encode_video` (``stylizeVideo.sh:98``).
+
+    The legacy interactive ``-backend`` / ``-gpu`` prompts are replaced by
+    :mod:`artvid.device` (``--device``); the resolution prompt by
+    ``--resolution``.
+
+    Args:
+        args: Parsed CLI namespace (see :func:`build_parser`).
+
+    Returns:
+        Process exit code (``0`` on success).
     """
-    raise NotImplementedError(
-        "`artvid run` (end-to-end video pipeline, replacing stylizeVideo.sh) "
-        "lands in milestone M4. It will chain frame extraction (artvid/io/"
-        "video.py), `artvid flow`, `artvid stylize`, and ffmpeg re-encode."
+    _engine_guard(args)
+
+    from artvid.io.video import extract_frames, encode_video
+
+    video_path = Path(args.video)
+    if not video_path.is_file():
+        print(f"error: input video not found: {video_path}", file=sys.stderr)
+        return 2
+
+    # Work folder, derived from the video basename like stylizeVideo.sh:22-29.
+    if args.work_dir is not None:
+        work_dir = Path(args.work_dir)
+    else:
+        work_dir = Path(video_path.stem.replace("%", "x"))
+    frames_dir = work_dir / "frames"
+    flow_dir = work_dir / "flow"
+    out_dir = work_dir / "out"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    multipass = bool(args.multipass) or (args.passes is not None)
+
+    # --- 1. Extract frames -------------------------------------------------
+    frame_pattern = args.frame_pattern  # ffmpeg pattern, e.g. frame_%04d.ppm
+    content_pattern = extract_frames(
+        video_path,
+        frames_dir,
+        pattern=frame_pattern,
+        resolution=args.resolution,
     )
+    print(f"[run] extracted frames -> {content_pattern}")
+
+    # --- 2. Optical flow ----------------------------------------------------
+    if not args.no_flow:
+        from artvid import device as _device
+
+        _device.enable_mps_fallback()
+        dev = _device.get_device(args.device)
+        print(f"[run] computing optical flow on {dev} ...")
+        steps = sorted(set(int(s) for s in (args.steps or [1])))
+        _compute_flow_for_run(
+            content_pattern,
+            flow_dir,
+            start_number=args.start_number or 1,
+            num_images=args.num_images or 0,
+            steps=steps,
+            smooth_sigma=args.smooth_sigma,
+            mask_ext=args.mask_ext,
+            device=dev,
+            overwrite=args.overwrite_flow,
+            verbose=args.verbose,
+        )
+
+    # --- 3. Stylize ---------------------------------------------------------
+    from artvid.config import Config, load_args_file
+
+    overrides: dict[str, object] = {}
+    for args_file in args.args_file or []:
+        overrides.update(load_args_file(args_file))
+    overrides["content_pattern"] = content_pattern
+    overrides["style_image"] = args.style
+    overrides["output_folder"] = str(out_dir) + "/"
+    overrides["number_format"] = args.number_format
+    if args.start_number is not None:
+        overrides["start_number"] = args.start_number
+    if args.num_images:
+        overrides["num_images"] = args.num_images
+
+    # Wire the precomputed flow file patterns to the flow output folder, using
+    # the legacy [from]/{to} placeholder convention (matches `artvid flow`
+    # output names and getFormatedFlowFileName).
+    mask_ext = args.mask_ext if args.mask_ext.startswith(".") else "." + args.mask_ext
+    overrides["flow_pattern"] = str(flow_dir / "backward_[%d]_{%d}.flo")
+    overrides["flow_weight_pattern"] = str(flow_dir / f"reliable_[%d]_{{%d}}{mask_ext}")
+    overrides["forward_flow_pattern"] = str(flow_dir / "forward_[%d]_{%d}.flo")
+    overrides["backward_flow_pattern"] = str(flow_dir / "backward_[%d]_{%d}.flo")
+    overrides["forward_flow_weight_pattern"] = str(
+        flow_dir / f"reliable_[%d]_{{%d}}{mask_ext}"
+    )
+    overrides["backward_flow_weight_pattern"] = str(
+        flow_dir / f"reliable_[%d]_{{%d}}{mask_ext}"
+    )
+
+    # Explicit optimization / model flags (only those the user set).
+    for attr, field_name in _STYLIZE_CONFIG_MAP.items():
+        if attr in ("num_images", "start_number", "number_format"):
+            continue  # already handled above
+        if not hasattr(args, attr):
+            continue
+        value = getattr(args, attr)
+        if value is None:
+            continue
+        overrides[field_name] = value
+
+    if multipass and "temporal_weight" not in overrides:
+        overrides["temporal_weight"] = 5e2
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    config = Config(**overrides)
+
+    flow_source = "precomputed" if not args.no_flow else _flow_source(args)
+    if args.no_flow and getattr(args, "flow_source", None) is None:
+        flow_source = "raft"
+
+    if multipass:
+        from artvid.pipeline.multipass import stylize_video_multipass
+
+        results = stylize_video_multipass(config, flow_source=flow_source)
+        last_pass = config.num_passes
+        # Multi-pass final frames are named <basename>-<frame>_<pass><ext>.
+        out_stem = Path(config.output_image).stem
+        out_ext = Path(config.output_image).suffix
+        encode_pattern = (
+            f"{config.output_folder}{out_stem}-{config.number_format}"
+            f"_{last_pass}{out_ext}"
+        )
+    else:
+        from artvid.pipeline.singlepass import stylize_video
+
+        results = stylize_video(config, flow_source=flow_source)
+        out_stem = Path(config.output_image).stem
+        out_ext = Path(config.output_image).suffix
+        # Single-pass frames are named <basename>-<number><ext>, number is the
+        # relative frame index formatted with number_format.
+        encode_pattern = (
+            f"{config.output_folder}{out_stem}-{config.number_format}{out_ext}"
+        )
+    print(f"[run] stylized {len(results)} frame(s).")
+
+    # --- 4. Re-encode -------------------------------------------------------
+    extension = video_path.suffix.lstrip(".") or "mp4"
+    out_video = (
+        Path(args.output)
+        if args.output is not None
+        else work_dir.parent / f"{work_dir.name}-stylized.{extension}"
+    )
+    encode_video(encode_pattern, out_video, framerate=args.framerate)
+    print(f"[run] wrote stylized video -> {out_video}")
+    return 0
 
 
 # ---------------------------------------------------------------------------
 # Argument parsing / dispatch
 # ---------------------------------------------------------------------------
+
+def _add_stylize_flags(p: argparse.ArgumentParser) -> None:
+    """Add the shared ``Config`` / pipeline flags used by ``stylize`` and ``run``.
+
+    Every flag defaults to ``None`` (or ``store_true``/``False`` for booleans) so
+    that :func:`build_config` only applies the options the user explicitly set,
+    leaving everything else at the legacy :class:`~artvid.config.Config`
+    defaults. The flag names mirror the Config field names (and thus the legacy
+    ``cmd:option`` names) per ``docs/02-migration-map.md`` §3.
+    """
+    # --- pipeline selection -------------------------------------------------
+    p.add_argument(
+        "--multipass",
+        action="store_true",
+        help="Use the multi-pass (forward/backward) pipeline instead of single-pass.",
+    )
+    p.add_argument(
+        "--passes",
+        type=int,
+        default=None,
+        help="Number of multi-pass passes (-> Config.num_passes; implies --multipass).",
+    )
+    p.add_argument(
+        "--flow-source",
+        choices=("auto", "precomputed", "raft"),
+        default=None,
+        help="Where flow + reliability come from: auto (default), precomputed (.flo/.pgm), or raft (on-the-fly).",
+    )
+    p.add_argument(
+        "--args",
+        dest="args_file",
+        action="append",
+        default=None,
+        metavar="FILE",
+        help="Legacy -args parameter file (repeatable, applied lowest priority).",
+    )
+
+    # --- basic / sequence ---------------------------------------------------
+    p.add_argument("--style-blend-weights", default=None,
+                   help="Comma-separated blend weights for multiple style images.")
+    p.add_argument("--num-images", type=int, default=None,
+                   help="Number of frames; 0 = autodetect (-> Config.num_images).")
+    p.add_argument("--start-number", type=int, default=None,
+                   help="Index of the first frame (-> Config.start_number).")
+    p.add_argument("--continue-with", type=int, default=None,
+                   help="Resume from this (1-based) frame in the sequence.")
+    p.add_argument("--number-format", default=None,
+                   help="printf format for output frame numbers (-> Config.number_format).")
+
+    # --- flow patterns (single-pass) ---------------------------------------
+    p.add_argument("--flow-pattern", default=None,
+                   help="Backward flow .flo pattern (-> Config.flow_pattern).")
+    p.add_argument("--flow-weight-pattern", default=None,
+                   help="Reliability .pgm pattern (-> Config.flow_weight_pattern).")
+    p.add_argument("--flow-relative-indices", default=None,
+                   help="Comma-separated long-term step sizes (-> Config.flow_relative_indices).")
+    p.add_argument("--use-flow-every", type=int, default=None,
+                   help="Include every Nth previous frame; -1 disables (-> Config.use_flow_every).")
+    p.add_argument("--invert-flow-weights", action="store_const", const=True, default=None,
+                   help="Invert reliability weights (-> Config.invert_flow_weights).")
+
+    # --- flow patterns (multi-pass) ----------------------------------------
+    p.add_argument("--forward-flow-pattern", default=None,
+                   help="Forward flow .flo pattern (-> Config.forward_flow_pattern).")
+    p.add_argument("--backward-flow-pattern", default=None,
+                   help="Backward flow .flo pattern (-> Config.backward_flow_pattern).")
+    p.add_argument("--forward-flow-weight-pattern", default=None,
+                   help="Forward reliability pattern (-> Config.forward_flow_weight_pattern).")
+    p.add_argument("--backward-flow-weight-pattern", default=None,
+                   help="Backward reliability pattern (-> Config.backward_flow_weight_pattern).")
+
+    # --- multi-pass options -------------------------------------------------
+    p.add_argument("--blend-weight", type=float, default=None,
+                   help="Multi-pass neighbour blend weight (-> Config.blend_weight).")
+    p.add_argument("--blend-weight-last-pass", type=float, default=None,
+                   help="Multi-pass opposite-direction blend weight (-> Config.blend_weight_last_pass).")
+    p.add_argument("--use-temporal-loss-after", type=int, default=None,
+                   help="Enable temporal loss from this pass onward (-> Config.use_temporal_loss_after).")
+    p.add_argument("--continue-with-pass", type=int, default=None,
+                   help="Resume multi-pass from this pass (-> Config.continue_with_pass).")
+
+    # --- optimization -------------------------------------------------------
+    p.add_argument("--content-weight", type=float, default=None,
+                   help="Content reconstruction weight (-> Config.content_weight).")
+    p.add_argument("--style-weight", type=float, default=None,
+                   help="Style reconstruction weight (-> Config.style_weight).")
+    p.add_argument("--temporal-weight", type=float, default=None,
+                   help="Temporal consistency weight (-> Config.temporal_weight; multi-pass default 5e2).")
+    p.add_argument("--tv-weight", type=float, default=None,
+                   help="Total-variation weight (-> Config.tv_weight).")
+    p.add_argument("--temporal-criterion", choices=("mse", "smoothl1"), default=None,
+                   help="Temporal loss criterion (-> Config.temporal_criterion).")
+    p.add_argument("--num-iterations", default=None,
+                   help="Iterations 'first,subsequent' or single value (-> Config.num_iterations).")
+    p.add_argument("--tol-loss-relative", type=float, default=None,
+                   help="Relative-loss stopping tolerance (-> Config.tol_loss_relative).")
+    p.add_argument("--tol-loss-relative-interval", type=int, default=None,
+                   help="Iterations between relative-loss checks (-> Config.tol_loss_relative_interval).")
+    p.add_argument("--normalize-gradients", action="store_const", const=True, default=None,
+                   help="Normalize loss gradients (-> Config.normalize_gradients).")
+    p.add_argument("--init", default=None,
+                   help="Init mode 'first,subsequent' (random|image|prev|prevWarped|first; -> Config.init).")
+    p.add_argument("--optimizer", choices=("lbfgs", "adam"), default=None,
+                   help="Optimizer (-> Config.optimizer).")
+    p.add_argument("--learning-rate", type=float, default=None,
+                   help="Adam learning rate (-> Config.learning_rate).")
+
+    # --- output -------------------------------------------------------------
+    p.add_argument("--print-iter", type=int, default=None,
+                   help="Print loss every N iterations (-> Config.print_iter).")
+    p.add_argument("--save-iter", type=int, default=None,
+                   help="Save intermediate every N iterations; 0 = only final (-> Config.save_iter).")
+    p.add_argument("--output-image", default=None,
+                   help="Output image basename+ext, e.g. out.png (-> Config.output_image).")
+    p.add_argument("--output-folder", default=None,
+                   help="Output folder prefix (-> Config.output_folder).")
+    p.add_argument("--save-init", action="store_const", const=True, default=None,
+                   help="Save the per-frame initialization image (-> Config.save_init).")
+
+    # --- model / other ------------------------------------------------------
+    p.add_argument("--style-scale", type=float, default=None,
+                   help="Style-image scale relative to content (-> Config.style_scale).")
+    p.add_argument("--pooling", choices=("max", "avg"), default=None,
+                   help="VGG pooling type (-> Config.pooling).")
+    p.add_argument("--seed", type=int, default=None,
+                   help="RNG seed; -1 disables (-> Config.seed).")
+    p.add_argument("--content-layers", default=None,
+                   help="Comma-separated content layers (-> Config.content_layers).")
+    p.add_argument("--style-layers", default=None,
+                   help="Comma-separated style layers (-> Config.style_layers).")
+    p.add_argument("--combine-flow-weights-method", choices=("normalize", "closestFirst"), default=None,
+                   help="Long-term weight combination method (-> Config.combine_flow_weights_method).")
+    p.add_argument("--vgg-weights", default=None,
+                   help="'torchvision' or a path to caffe VGG-19 weights (-> Config.vgg_weights).")
+    p.add_argument(
+        "--device",
+        choices=("mps", "cuda", "cpu"),
+        default=None,
+        help="Compute device; default autodetect mps>cuda>cpu (-> Config.device).",
+    )
+    p.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="Print each output path as it is produced.",
+    )
+
 
 def build_parser() -> argparse.ArgumentParser:
     """Construct the top-level ``argparse`` parser with all subcommands."""
@@ -428,29 +927,93 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_flow.set_defaults(func=cmd_flow)
 
-    # --- stylize (stub) ---
+    # --- stylize ---
     p_stylize = sub.add_parser(
         "stylize",
-        help="Per-frame style transfer (NOT YET IMPLEMENTED — milestones M2-M3).",
-        description="Per-frame style transfer. Stub: implemented in M2 (single) / M3 (multi).",
+        help="Per-frame style transfer, single- or multi-pass (M2/M3).",
+        description=(
+            "Per-frame style transfer over a frame sequence. Single-pass by "
+            "default (ports artistic_video.lua); --multipass / --passes N "
+            "selects the forward/backward multi-pass pipeline "
+            "(ports artistic_video_multiPass.lua)."
+        ),
     )
-    p_stylize.add_argument("frames", help="printf-style frame pattern.")
-    p_stylize.add_argument("style", help="Path to the style image.")
     p_stylize.add_argument(
-        "--multipass",
-        action="store_true",
-        help="Use the multi-pass pipeline (M3) instead of single-pass (M2).",
+        "frames",
+        help="printf-style content frame pattern (-> Config.content_pattern), e.g. 'frames/frame_%%04d.ppm'.",
     )
+    p_stylize.add_argument("style", help="Path to the style image (comma-separate for multiple).")
+    _add_stylize_flags(p_stylize)
     p_stylize.set_defaults(func=cmd_stylize)
 
-    # --- run (stub) ---
+    # --- run (end-to-end) ---
     p_run = sub.add_parser(
         "run",
-        help="End-to-end video stylization (NOT YET IMPLEMENTED — milestone M4).",
-        description="End-to-end video -> stylized video. Stub: implemented in M4 (replaces stylizeVideo.sh).",
+        help="End-to-end video -> stylized video (replaces stylizeVideo.sh).",
+        description=(
+            "End-to-end pipeline: extract frames, compute RAFT optical flow + "
+            "reliability, stylize (single- or multi-pass), and re-encode the "
+            "stylized frames into a video. Ports stylizeVideo.sh."
+        ),
     )
     p_run.add_argument("video", help="Input video file.")
-    p_run.add_argument("style", help="Path to the style image.")
+    p_run.add_argument("style", help="Path to the style image (comma-separate for multiple).")
+    p_run.add_argument(
+        "--work-dir",
+        default=None,
+        help="Working folder for frames/flow/outputs (default: derived from video basename).",
+    )
+    p_run.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        help="Output video path (default: <work_dir>-stylized.<ext>).",
+    )
+    p_run.add_argument(
+        "--frame-pattern",
+        default="frame_%04d.ppm",
+        help="ffmpeg frame-extraction filename pattern (default: frame_%%04d.ppm).",
+    )
+    p_run.add_argument(
+        "--resolution",
+        default=None,
+        help="Optional 'w:h' to rescale frames during extraction (default: original).",
+    )
+    p_run.add_argument(
+        "--framerate",
+        type=int,
+        default=None,
+        help="Output video framerate (default: ffmpeg default, 25fps).",
+    )
+    p_run.add_argument(
+        "--no-flow",
+        action="store_true",
+        help="Skip flow precompute; stylize uses on-the-fly RAFT flow instead.",
+    )
+    p_run.add_argument(
+        "--steps",
+        type=int,
+        nargs="+",
+        default=[1],
+        help="Long-term flow step sizes for the flow precompute (default: [1]).",
+    )
+    p_run.add_argument(
+        "--smooth-sigma",
+        type=float,
+        default=0.8,
+        help="Gaussian sigma for reliability-mask smoothing in flow precompute (default: 0.8).",
+    )
+    p_run.add_argument(
+        "--mask-ext",
+        default=".pgm",
+        help="Reliability mask file extension (default: .pgm).",
+    )
+    p_run.add_argument(
+        "--overwrite-flow",
+        action="store_true",
+        help="Recompute flow even if output files already exist.",
+    )
+    _add_stylize_flags(p_run)
     p_run.set_defaults(func=cmd_run)
 
     return parser

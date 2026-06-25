@@ -154,7 +154,7 @@ def test_content_loss_gradient_flows_and_zero_at_target(torch):
     # Non-zero + finite gradient away from the target.
     x = torch.randn(1, 4, 5, 6, requires_grad=True)
     out = loss_mod(x)
-    assert float(out) > 0.0
+    assert float(out.detach()) > 0.0
     out.backward()
     assert x.grad is not None and torch.isfinite(x.grad).all()
     assert x.grad.abs().sum() > 0
@@ -267,7 +267,9 @@ def test_stylize_image_lbfgs_runs_on_8x8(torch, tmp_path):
         content, style, cfg, device="cpu",
     )
 
-    assert image_pre.shape == (1, 3, 8, 8)
+    # stylize_image returns the optimized image variable in CHW (the Phase 1
+    # convention; VGG adds the batch dim internally), not NCHW.
+    assert image_pre.shape == (3, 8, 8)
     assert torch.isfinite(image_pre).all()
     assert result.num_iterations >= 1
     # L-BFGS should have made progress: final total <= initial total.
@@ -292,7 +294,7 @@ def test_stylize_image_adam_runs_on_8x8(torch, tmp_path):
     out = tmp_path / "out.png"
     image_pre, result = stylize_image(content, style, cfg, device="cpu", output_path=out)
 
-    assert image_pre.shape == (1, 3, 8, 8)
+    assert image_pre.shape == (3, 8, 8)  # CHW (see lbfgs test)
     assert torch.isfinite(image_pre).all()
     assert out.is_file()  # save_fn callback fired
 

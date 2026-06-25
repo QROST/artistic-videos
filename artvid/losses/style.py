@@ -17,6 +17,17 @@ Modernization
 A plain :class:`torch.nn.Module` whose :meth:`forward` returns a scalar; the
 backward is left to autograd. The division by ``nElement`` is preserved so the
 loss magnitude matches the legacy implementation for a given ``strength``.
+
+Deferred parity note (``docs/06`` #1): the legacy ``StyleLoss:updateGradInput``
+(``artistic_video_core.lua:389``) divided the criterion gradient ``dG`` by
+``input:nElement()`` a *second* time in the backward pass, on top of the forward
+``:div(input:nElement())`` (``:380``). That extra backward-only factor scales
+the *gradient* by ``1/nElement`` relative to differentiating this forward loss,
+so autograd here does NOT reproduce it (it would require a custom
+``autograd.Function``). This affects only gradient *magnitude* — absorbable by
+``style_weight`` / the optimizer's learning rate — not the loss value. We
+deliberately omit it; restore by scaling the gram gradient by ``1/input.numel()``
+in a custom backward if strict numerical replication is ever required.
 """
 
 from __future__ import annotations

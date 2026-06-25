@@ -10,8 +10,9 @@
 
 ## M0（损失/IO/VGG/优化器）
 
-1. **StyleLoss 反向的二次 `/nElement`（style.py，minor）**
+1. **StyleLoss 反向的二次 `/nElement`（style.py，minor）← 已文档化（FIXED-doc）**
    旧 `StyleLoss:updateGradInput`（`artistic_video_core.lua:389`）在反向里对 `dG` 再除一次 `input:nElement()`，叠加在前向除法之上。现代 autograd 路径不复现这个「仅反向」的额外因子。仅影响梯度幅度（可被 `style_weight`/优化器吸收）。若将来需要严格数值复刻，加一行缩放即可。
+   **本轮处理**：在 `style.py` 模块 docstring 加了「Deferred parity note (#1)」说明此「仅反向」额外因子被刻意省略、其影响（仅梯度幅度）、以及如何用自定义 `autograd.Function` 复刻。**无行为改动。**
 
 2. **`normalize_gradients=True` 的 L1 归一化位置（style/content/temporal.py，minor）**
    旧版对「gram 反向得到的、关于输入特征图的 gradInput」做 L1 归一化；新版对 gram 自身的梯度做归一化。三个损失彼此一致，且该开关**默认 False**。仅在显式开启时幅度不同。
@@ -21,24 +22,31 @@
 
 ## M1（光流栈）
 
-4. **越界像素的可靠性 seed（consistency.py，major 但非阻塞）** ← 最值得关注
-   `consistencyChecker.cpp:64-65` 把「前向落点越界」的像素 seed 为 `reliable=0.0`（同运动边界），**而非**遮挡负 seed（−255）。当前实现把越界并入负 seed（`_OCCLUDED_SEED`），高斯平滑后负 seed 会沿帧边界向**内**侵蚀邻近像素的可靠性，产生与 C++ 不同的边界 halo（越界像素本身裁剪后仍为 0，差异在邻域）。
-   **建议修复**：把越界像素按运动边界一样 seed 为 0，与「前后向不一致」的负 seed 分开处理。影响有界（边缘略偏保守），可在 M5 Max 验证可视化后决定是否改。
+4. **越界像素的可靠性 seed（consistency.py，major 但非阻塞）← 已修复（FIXED）**
+   `consistencyChecker.cpp:64-65` 把「前向落点越界」的像素 seed 为 `reliable=0.0`（同运动边界 cpp:84），**而非**遮挡负 seed（−255 cpp:80）。旧实现把越界并入负 seed（`occluded = occluded | (~in_bounds)`），高斯平滑后负 seed 会沿帧边界向**内**侵蚀邻近像素的可靠性，产生与 C++ 不同的边界 halo。
+   **本轮修复**：在 `consistency.py:consistency_mask` 把两类 seed 分开：`inconsistent`（仅前后向往返失败 cpp:77）保留 `_OCCLUDED_SEED`（−1）负 seed；越界像素用 `torch.where(~in_bounds, ...)` seed 为 `_MOTION_BOUNDARY_SEED`（0.0），且在 fb seed **之后**应用以匹配 C++ 中 OOB 守卫先 `continue` 的优先级。运动边界检测也相应排除 `~in_bounds`。加了引用 cpp:64-65,78-81,84 的注释；模块/函数 docstring 同步订正。
 
 5. **RAFT transforms 的 docstring 不准确（raft.py，minor）**
    注释称 `Raft_Large_Weights.DEFAULT.transforms()` 会把空间尺寸对齐到 8 的倍数；实际该 transform 只做 dtype 转换与归一化到 [−1,1]，/8 对齐是代码里用 `F.interpolate` 手动完成的。**行为正确，仅注释误导**，需订正。
 
-6. **一致性梯度算子为近似（consistency.py，minor）**
-   用「中心差分 + replicate 边界」近似 C++ 的 Brox `CDerivative(3)` 核与 `NFilter` 边界处理。因梯度被平方+阈值用于运动边界检测（属内部特征），影响可忽略；但 docstring 写「same operator」略过强，应改为「近似」。
+6. **一致性梯度算子为近似（consistency.py，minor）← 已修复（FIXED-doc）**
+   用「中心差分 + replicate 边界」近似 C++ 的 Brox `CDerivative(3)` 核与 `NFilter` 边界处理。因梯度被平方+阈值用于运动边界检测（属内部特征），影响可忽略；但 docstring 写「same operator」略过强。
+   **本轮修复**：`_flow_gradient_sq` docstring 已把「same operator」改为明确的「close *approximation*」，说明内部 tap 权重一致而 `CDerivative(3)`/`NFilter` 的边界处理不同、且因平方+阈值用作内部特征故差异可忽略。**无行为改动。**
 
-7. **`consistency_mask` 参数命名（consistency.py，minor）**
-   形参名为 `(forward_flow, backward_flow)`，而 `cli.py` 按 `consistency_mask(backward, forward)` 调用（镜像 consistencyChecker 的 `flow1=backward, flow2=forward`）。数学在两种顺序下都正确，纯属命名易误导，建议改名为 `(flow1, flow2)` 并加注释。
+7. **`consistency_mask` 参数命名（consistency.py，minor）← 已修复（FIXED）**
+   旧形参名为 `(forward_flow, backward_flow)`，而 `cli.py` 按 `consistency_mask(backward, forward)` 调用（镜像 consistencyChecker 的 `flow1=backward, flow2=forward`）。数学在两种顺序下都正确，纯属命名易误导。
+   **本轮修复**：形参改名为 `(flow1, flow2)`，与 C++ `checkConsistency(flow1, flow2, ...)` 一致，并在 docstring 加注：mask 定义在 `flow1` 帧上，`flow1` 为被验证流、`flow2` 为反方向交叉校验流。全部调用点（`cli.py:279,285`、`singlepass.py:665`、`multipass.py:675`）均按位置传参，**行为不变**，无需改调用点。
 
 ## 处理优先级
 
 - **运行时验证前必做**：在 M5 Max 上 `pip install -e ".[dev]"` 后跑 `pytest`（确认 torch 单测通过）。
-- **建议在进入 M2 前修**：#4（越界 seed）、#5/#7（注释与命名，低成本）。
-- **可延后**：#1/#2/#3（仅在需要严格数值复刻时）。
+- **建议在进入 M2 前修**：~~#4（越界 seed）、#5/#7（注释与命名，低成本）~~ → **已修复**（见各条 FIXED 标注；本轮另修 #1/#6 文档化）。
+- **可延后**：#2/#3（仅在需要严格数值复刻时）。
+
+### 本轮 lint 清理（无行为改动）
+
+- `multipass.py`：删除未使用的 `from dataclasses import ... field` 导入（该文件未用 `field()`）。
+- `singlepass.py`：删除已失效的 `is_first` 形参 —— 自 #9 修复起 `_init_frame_image` 改按 `frame_idx > start` 门控，`is_first` 已不再被读取。同步删除调用点的 `is_first=is_first` kwarg 与循环体内未使用的 `is_first = frame_idx == first_idx` 局部变量（`first_idx` 仍用于循环范围，保留）。第 ~744 行解释性注释保留（仍正确对比「按 frame_idx 而非 is_first 门控」）。
 
 ## M2/M3/M4（管线与 CLI）
 

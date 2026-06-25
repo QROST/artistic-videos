@@ -18,7 +18,7 @@ No torch import here — this module stays cheap and torch-free.
 from __future__ import annotations
 
 import shlex
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 

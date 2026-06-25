@@ -500,8 +500,6 @@ class DiffusionEngine:
             image = load_image(image)  # (3,H,W) float32 [0,1]
 
         if hasattr(image, "dim"):  # torch tensor
-            import numpy as np
-
             t = image
             if t.dim() == 4:
                 t = t[0]

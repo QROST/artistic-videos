@@ -330,7 +330,7 @@ def stylize_video_diffusion(
         latent_reliability,
         warp_latent,
     )
-    from artvid.io.image import load_image, save_image
+    from artvid.io.image import load_image
     from artvid.pipeline.singlepass import _content_frame_path, discover_num_images
 
     config = config or Config()

@@ -82,8 +82,17 @@ def _load_model(device_str: str):
     import torch
     from torchvision.models.optical_flow import Raft_Large_Weights, raft_large
 
+    from artvid import device as _device
+
+    # RAFT's correlation / grid_sample ops are float32-only here and a couple of
+    # its kernels may be unimplemented on MPS; ensure the CPU fallback is armed
+    # before the first dispatch (idempotent — no-op if already set by the CLI).
+    _device.enable_mps_fallback()
+
     weights = Raft_Large_Weights.DEFAULT
     model = raft_large(weights=weights, progress=False)
+    # Weights stay float32 (RAFT is run under no_grad as a fixed preprocessing
+    # step; we never promote to float64, which MPS does not support).
     model = model.eval().to(torch.device(device_str))
     for param in model.parameters():
         param.requires_grad_(False)

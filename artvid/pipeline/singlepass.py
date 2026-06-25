@@ -752,6 +752,9 @@ def _init_frame_image(
             f"Invalid initialization method {init_mode!r} for frame {frame_idx}."
         )
 
+    # The optimized image variable stays float32 on every backend (mps/cuda/cpu)
+    # for L-BFGS stability — see artvid.device.image_optim_dtype(). MPS does not
+    # support float64, so we never promote here.
     img = img.to(device=device, dtype=torch.float32).contiguous()
     img.requires_grad_(True)
     return img

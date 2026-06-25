@@ -30,6 +30,41 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.4"]
+# Phase 2 diffusion engine (artvid/diffusion/*). These are only needed for
+# `--engine diffusion`; Phase 1 (optim) runs on the base deps alone.
+#
+# Lower bounds below are chosen for SDXL + ControlNet + IP-Adapter support on
+# Apple Silicon (MPS):
+#   * diffusers>=0.27  — IP-Adapter loading via load_ip_adapter() and the
+#     StableDiffusionXLControlNetPipeline both stabilised by this release.
+#   * transformers>=4.38 — CLIP image/text encoders required by SDXL and the
+#     IP-Adapter image encoder.
+#   * accelerate>=0.27 — device_map / low-memory model loading used by diffusers.
+#   * safetensors>=0.4 — weight format for SDXL/ControlNet/IP-Adapter checkpoints.
+#   * controlnet_aux>=0.0.7 — control-image preprocessors (canny/depth/etc.).
+#   * peft>=0.9 — LoRA / adapter plumbing diffusers uses for IP-Adapter weights.
+#
+# NOTE: these are conservative floors, not validated pins. Confirm exact
+# versions on the M5 Max (Metal/MPS) hardware and pin a known-good set there,
+# since diffusers/transformers/peft interlock tightly across releases.
+diffusion = [
+    "diffusers>=0.27",
+    "transformers>=4.38",
+    "accelerate>=0.27",
+    "safetensors>=0.4",
+    "controlnet_aux>=0.0.7",
+    "peft>=0.9",
+]
+# Convenience aggregate: everything for development + the diffusion engine.
+all = [
+    "pytest>=7.4",
+    "diffusers>=0.27",
+    "transformers>=4.38",
+    "accelerate>=0.27",
+    "safetensors>=0.4",
+    "controlnet_aux>=0.0.7",
+    "peft>=0.9",
+]
 
 [project.scripts]
 artvid = "artvid.cli:main"

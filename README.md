@@ -1,5 +1,30 @@
 # artistic-videos
 
+## 2026 Modernization — PyTorch port (artvid)
+
+This repository now ships a **PyTorch + Metal (MPS) rewrite**, packaged as `artvid`,
+targeting **Apple Silicon / M5 Max** (unified memory, MPS backend with CPU fallback).
+It reimplements the video style-transfer pipeline of Ruder et al. (2016) with a modern
+optimization engine and adds an optional diffusion engine (SDXL + ControlNet + IP-Adapter).
+
+**Documentation:**
+- [docs/README.md](docs/README.md) — design & documentation index
+- [docs/08-m5max-quickstart.md](docs/08-m5max-quickstart.md) — Apple M5 Max quickstart
+- [docs/usage.md](docs/usage.md) — end-user CLI usage guide
+
+**Headline commands:**
+
+```bash
+pip install -e ".[all]"
+artvid run input.mp4 style.jpg               # optimization engine (default)
+artvid --engine diffusion run input.mp4 style.jpg   # SDXL diffusion engine
+```
+
+The legacy Torch7/Lua implementation documented below remains in the repository as the
+original reference.
+
+---
+
 This is the torch implementation for the paper "[Artistic style transfer for videos](http://arxiv.org/abs/1604.08610)", based on neural-style code by Justin Johnson https://github.com/jcjohnson/neural-style .
 
 Our algorithm allows to transfer the style from one image (for example, a painting) to a whole video sequence and generates consistent and stable stylized video sequences.

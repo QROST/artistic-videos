@@ -759,6 +759,8 @@ def _init_first_pass(
             f"(frame {frame_idx})."
         )
 
+    # Optimized image stays float32 on all backends (L-BFGS stability;
+    # MPS lacks float64) — see artvid.device.image_optim_dtype().
     img = img.to(device=device, dtype=torch.float32).contiguous()
     img.requires_grad_(True)
     return img
@@ -824,6 +826,8 @@ def _init_blended(
         divisor = divisor + w3
 
     img = img / divisor
+    # Optimized image stays float32 on all backends (L-BFGS stability;
+    # MPS lacks float64) — see artvid.device.image_optim_dtype().
     img = preprocess(img, mode=mode).to(device=device, dtype=torch.float32).contiguous()
     img.requires_grad_(True)
     return img

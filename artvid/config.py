@@ -144,6 +144,49 @@ class Config:
     )
     combine_flow_weights_method: str = "closestFirst"  # normalize|closestFirst
 
+    # --- Diffusion engine (Phase 2; see docs/07-phase2-design.md §4.1) ---
+    # Consumed by the (lazy, torch-touching) artvid.diffusion package when the
+    # CLI runs with --engine diffusion. All fields are torch-free plain values;
+    # nothing here imports torch/diffusers. The flow_* patterns, content_pattern,
+    # style_image, output_*, start_number, num_images and number_format above are
+    # REUSED unchanged by the diffusion path -- these only add the model/sampling
+    # and latent-consistency knobs.
+
+    # Model stack (HF ids). TODO(tuning): confirm exact ids/revisions are the
+    # mid-2026 SOTA + available + license-clean before download; pin revision=.
+    diff_base_model: str = "stabilityai/stable-diffusion-xl-base-1.0"
+    controlnet_model: str = "diffusers/controlnet-depth-sdxl-1.0"
+    controlnet_kind: str = "depth"  # depth|canny|lineart|hed|tile (structure preproc)
+    controlnet_scale: float = 0.7  # ControlNet conditioning_scale; TODO(tuning)
+    ip_adapter_repo: str = "h94/IP-Adapter"
+    ip_adapter_subfolder: str = "sdxl_models"
+    ip_adapter_weight: str = "ip-adapter_sdxl.bin"
+    ip_adapter_scale: float = 0.7  # style-from-reference strength; TODO(tuning)
+
+    # Sampling / prompting.
+    diff_prompt: str = ""  # optional text prompt (style/content hints)
+    diff_negative_prompt: str = ""
+    diff_steps: int = 30  # K denoising steps; TODO(tuning) per scheduler
+    guidance_scale: float = 6.0  # classifier-free guidance; TODO(tuning)
+    denoise_strength: float = 1.0  # img2img denoise fraction (1.0 = full); TODO(tuning)
+    temporal_init_strength: float = 0.6  # img2img strength for warped-latent init
+    # on subsequent frames (lower = stay closer to the warped previous frame =
+    # more temporally stable; higher = more fresh synthesis). TODO(tuning).
+    diff_scheduler: str = "euler"  # euler|ddim|dpm
+
+    # Temporal latent-flow consistency (the Phase 2 differentiator; §2).
+    temporal_strength: float = 0.6  # per-step fusion blend cap in reliable regions; TODO(tuning)
+    temporal_fuse_start: float = 0.0  # fraction of steps where fusion begins; TODO(tuning)
+    temporal_fuse_end: float = 0.7  # fraction where it ends (fuse early/mid only); TODO(tuning)
+    latent_consistency_weight: float = 0.6  # alias-friendly weight for the latent
+    # consistency mechanism; mirrors temporal_strength as the "how hard to pull
+    # toward the warped previous latent" knob. TODO(tuning): decide whether to
+    # collapse with temporal_strength once tuned on hardware.
+    latent_reliability_gamma: float = 2.0  # erosion of downsampled reliability mask; TODO(tuning)
+    warp_space: str = "latent"  # latent|pixel (latent warp vs VAE-decode->warp->encode)
+    use_anchor: bool = False  # long-term anchor warp (combine_longterm_weights); §2.6
+    vae_factor: int = 8  # VAE spatial downsample (SDXL/SD1.5 = 8); change only if model differs
+
     # --- Modernization: replaces -proto_file/-model_file (loadcaffe) ---
     # 'torchvision' uses torchvision VGG-19 weights (RGB, ImageNet norm);
     # any other value is treated as a path to caffe VGG-19 weights (BGR mean).

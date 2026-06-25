@@ -23,9 +23,14 @@ and ``run`` (end-to-end) in **M4**. ``main`` parses ``argv``, selects a
 subcommand and dispatches.
 
 The ``--engine`` flag selects the style-transfer engine. ``optim`` (the Phase 1
-default) is the L-BFGS/Adam optimization method ported here; ``diffusion`` is
-reserved for Phase 2 and the ``stylize`` / ``run`` handlers raise a clear "not
-implemented in Phase 1" error when it is selected.
+default, fully intact) is the L-BFGS/Adam optimization method ported here;
+``diffusion`` (Phase 2) dispatches ``stylize`` / ``run`` to the diffusion video
+pipeline (:func:`artvid.diffusion.video.stylize_video_diffusion` — SDXL +
+ControlNet + IP-Adapter with latent optical-flow temporal consistency, reusing
+the Phase 1 flow stack). The diffusion path lazily imports ``torch`` /
+``diffusers`` and downloads model weights from Hugging Face on first run (see
+``docs/07-phase2-design.md`` §1/§7); a one-line banner warns about this before
+the heavy pipeline is built. ``flow`` is engine-agnostic and unchanged.
 
 The ``flow`` subcommand wires together the already-implemented flow modules:
 
@@ -308,18 +313,31 @@ def cmd_flow(args: argparse.Namespace) -> int:
 # Config construction (CLI flags -> artvid.config.Config)
 # ---------------------------------------------------------------------------
 
-def _engine_guard(args: argparse.Namespace) -> None:
-    """Raise a clear Phase-1 error when ``--engine diffusion`` is selected.
+def _is_diffusion(args: argparse.Namespace) -> bool:
+    """Return True when ``--engine diffusion`` (the Phase 2 engine) is selected."""
+    return getattr(args, "engine", "optim") == "diffusion"
 
-    The diffusion engine is a Phase 2 deliverable; only the ``optim`` engine
-    (the ported L-BFGS/Adam optimization method) exists in Phase 1.
+
+def _diffusion_banner() -> None:
+    """Print a one-line first-run notice before the diffusion pipeline is built.
+
+    The diffusion engine lazily imports ``torch`` / ``diffusers`` and downloads
+    the SDXL base + ControlNet + IP-Adapter weights from Hugging Face on first
+    run (multiple GB; cached afterwards under ``HF_HOME``). It also acknowledges
+    the model licenses (CreativeML Open RAIL++-M for SDXL; see
+    ``docs/07-phase2-design.md`` §7). Surfacing this up front avoids a silent
+    long pause on the first invocation.
     """
-    if getattr(args, "engine", "optim") == "diffusion":
-        raise NotImplementedError(
-            "--engine diffusion is not implemented in Phase 1. Use "
-            "--engine optim (the default), the ported L-BFGS/Adam optimization "
-            "method. The diffusion engine is a Phase 2 deliverable."
-        )
+    print(
+        "[diffusion] Phase 2 engine: SDXL + ControlNet + IP-Adapter with latent "
+        "optical-flow temporal consistency.\n"
+        "[diffusion] First run downloads model weights from Hugging Face "
+        "(several GB; cached under HF_HOME). Requires torch + diffusers and a "
+        "device with enough memory (tuned for Apple Silicon / MPS).\n"
+        "[diffusion] Models carry their own licenses (SDXL: CreativeML Open "
+        "RAIL++-M); see docs/07-phase2-design.md §7.",
+        file=sys.stderr,
+    )
 
 
 # CLI-flag attribute name -> Config field name. Only attributes that are present
@@ -375,6 +393,31 @@ _STYLIZE_CONFIG_MAP: dict[str, str] = {
     "combine_flow_weights_method": "combine_flow_weights_method",
     "vgg_weights": "vgg_weights",
     "device": "device",
+    # --- Diffusion engine (Phase 2; only consulted when --engine diffusion).
+    # These map onto the Config "diffusion" field group (docs/07-phase2-design.md
+    # §4.1) and are ignored by the optim path (they are not referenced by it).
+    "diff_base_model": "diff_base_model",
+    "controlnet_model": "controlnet_model",
+    "controlnet_kind": "controlnet_kind",
+    "controlnet_scale": "controlnet_scale",
+    "ip_adapter_repo": "ip_adapter_repo",
+    "ip_adapter_subfolder": "ip_adapter_subfolder",
+    "ip_adapter_weight": "ip_adapter_weight",
+    "ip_adapter_scale": "ip_adapter_scale",
+    "diff_prompt": "diff_prompt",
+    "diff_negative_prompt": "diff_negative_prompt",
+    "diff_steps": "diff_steps",
+    "guidance_scale": "guidance_scale",
+    "denoise_strength": "denoise_strength",
+    "diff_scheduler": "diff_scheduler",
+    "temporal_strength": "temporal_strength",
+    "temporal_fuse_start": "temporal_fuse_start",
+    "temporal_fuse_end": "temporal_fuse_end",
+    "latent_consistency_weight": "latent_consistency_weight",
+    "latent_reliability_gamma": "latent_reliability_gamma",
+    "warp_space": "warp_space",
+    "use_anchor": "use_anchor",
+    "vae_factor": "vae_factor",
 }
 
 
@@ -447,16 +490,43 @@ def cmd_stylize(args: argparse.Namespace) -> int:
     Device selection goes through :mod:`artvid.device` (via ``Config.device`` /
     ``--device``), replacing the legacy ``-gpu`` / ``-backend`` options.
 
+    With ``--engine diffusion`` (Phase 2) this instead dispatches to
+    :func:`artvid.diffusion.video.stylize_video_diffusion` — the SDXL +
+    ControlNet + IP-Adapter pipeline with latent optical-flow temporal
+    consistency. The diffusion engine has no forward/backward multi-pass notion,
+    so ``--multipass`` / ``--passes`` are rejected for it; the positional
+    ``style`` argument is reused as the IP-Adapter style reference.
+
     Args:
         args: Parsed CLI namespace (see :func:`build_parser`).
 
     Returns:
         Process exit code (``0`` on success).
     """
-    _engine_guard(args)
+    flow_source = _flow_source(args)
+
+    if _is_diffusion(args):
+        if bool(args.multipass) or (args.passes is not None):
+            print(
+                "error: --multipass / --passes are not supported with "
+                "--engine diffusion (the diffusion engine is single-pass; "
+                "temporal coherence comes from latent flow consistency, not "
+                "forward/backward passes).",
+                file=sys.stderr,
+            )
+            return 2
+        config = build_config(args)
+        _diffusion_banner()
+        from artvid.diffusion.video import stylize_video_diffusion
+
+        results = stylize_video_diffusion(config, flow_source=flow_source)
+        print(f"[stylize] diffusion done: {len(results)} frame(s) stylized.")
+        if args.verbose:
+            for r in results:
+                print(f"  {r.output_path}")
+        return 0
 
     config = build_config(args)
-    flow_source = _flow_source(args)
     multipass = bool(args.multipass) or (args.passes is not None)
 
     if multipass:
@@ -538,19 +608,35 @@ def cmd_run(args: argparse.Namespace) -> int:
     :mod:`artvid.device` (``--device``); the resolution prompt by
     ``--resolution``.
 
+    With ``--engine diffusion`` (Phase 2) steps 1 (extract), 2 (flow precompute —
+    **fully reused**: the diffusion engine consumes the same ``.flo`` /
+    reliability files) and 4 (re-encode) are unchanged; only step 3 swaps the
+    optim single/multi-pass stylize for
+    :func:`artvid.diffusion.video.stylize_video_diffusion`. The diffusion engine
+    is single-pass (no ``--multipass`` / ``--passes``).
+
     Args:
         args: Parsed CLI namespace (see :func:`build_parser`).
 
     Returns:
         Process exit code (``0`` on success).
     """
-    _engine_guard(args)
+    diffusion = _is_diffusion(args)
 
     from artvid.io.video import extract_frames, encode_video
 
     video_path = Path(args.video)
     if not video_path.is_file():
         print(f"error: input video not found: {video_path}", file=sys.stderr)
+        return 2
+
+    multipass = bool(args.multipass) or (args.passes is not None)
+    if diffusion and multipass:
+        print(
+            "error: --multipass / --passes are not supported with "
+            "--engine diffusion (the diffusion engine is single-pass).",
+            file=sys.stderr,
+        )
         return 2
 
     # Work folder, derived from the video basename like stylizeVideo.sh:22-29.
@@ -562,8 +648,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     flow_dir = work_dir / "flow"
     out_dir = work_dir / "out"
     work_dir.mkdir(parents=True, exist_ok=True)
-
-    multipass = bool(args.multipass) or (args.passes is not None)
 
     # --- 1. Extract frames -------------------------------------------------
     frame_pattern = args.frame_pattern  # ffmpeg pattern, e.g. frame_%04d.ppm
@@ -647,7 +731,21 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.no_flow and getattr(args, "flow_source", None) is None:
         flow_source = "raft"
 
-    if multipass:
+    if diffusion:
+        # Phase 2: swap only the stylize step. The diffusion engine writes frames
+        # with the SAME single-pass naming (artvid.diffusion.video._output_path_for
+        # -> pipeline.singlepass.build_out_filename), so the single-pass
+        # encode_pattern below re-encodes them unchanged.
+        _diffusion_banner()
+        from artvid.diffusion.video import stylize_video_diffusion
+
+        results = stylize_video_diffusion(config, flow_source=flow_source)
+        out_stem = Path(config.output_image).stem
+        out_ext = Path(config.output_image).suffix
+        encode_pattern = (
+            f"{config.output_folder}{out_stem}-{config.number_format}{out_ext}"
+        )
+    elif multipass:
         from artvid.pipeline.multipass import stylize_video_multipass
 
         results = stylize_video_multipass(config, flow_source=flow_source)
@@ -827,10 +925,81 @@ def _add_stylize_flags(p: argparse.ArgumentParser) -> None:
         default=None,
         help="Compute device; default autodetect mps>cuda>cpu (-> Config.device).",
     )
+
+    # --- diffusion engine (Phase 2; only used with --engine diffusion) ------
+    # All default=None so build_config applies them only when the user set them,
+    # leaving Config's diffusion-group defaults (docs/07-phase2-design.md §4.1)
+    # intact. Ignored by the optim engine.
+    _add_diffusion_flags(p)
+
     p.add_argument(
         "-v", "--verbose", action="store_true",
         help="Print each output path as it is produced.",
     )
+
+
+def _add_diffusion_flags(p: argparse.ArgumentParser) -> None:
+    """Add the Phase 2 diffusion-engine flags (only consulted with --engine diffusion).
+
+    Every flag defaults to ``None`` so :func:`build_config` only applies the ones
+    the user explicitly set, leaving the :class:`~artvid.config.Config`
+    "diffusion" field-group defaults (docs/07-phase2-design.md §4.1) intact. These
+    flags are ignored by the optim engine. Numerically/qualitatively sensitive
+    knobs (controlnet_scale, ip_adapter_scale, guidance_scale, the temporal-flow
+    consistency strength/window, reliability gamma) are TODO(tuning) on the M5 Max
+    — the CLI just surfaces them; their defaults live in Config.
+    """
+    g = p.add_argument_group(
+        "diffusion engine (Phase 2; only with --engine diffusion)"
+    )
+    # --- model stack (HF ids) ----------------------------------------------
+    g.add_argument("--diff-base-model", default=None,
+                   help="Base T2I HF id (-> Config.diff_base_model; default SDXL base).")
+    g.add_argument("--controlnet-model", default=None,
+                   help="Structure ControlNet HF id (-> Config.controlnet_model).")
+    g.add_argument("--controlnet-kind", choices=("depth", "canny", "lineart", "hed", "tile"),
+                   default=None,
+                   help="Structure preprocessor signal (-> Config.controlnet_kind).")
+    g.add_argument("--controlnet-scale", type=float, default=None,
+                   help="ControlNet conditioning scale (-> Config.controlnet_scale; TODO tuning).")
+    g.add_argument("--ip-adapter-repo", default=None,
+                   help="IP-Adapter HF repo (-> Config.ip_adapter_repo).")
+    g.add_argument("--ip-adapter-subfolder", default=None,
+                   help="IP-Adapter weights subfolder (-> Config.ip_adapter_subfolder).")
+    g.add_argument("--ip-adapter-weight", default=None,
+                   help="IP-Adapter weight filename (-> Config.ip_adapter_weight).")
+    g.add_argument("--ip-adapter-scale", type=float, default=None,
+                   help="Style-from-reference strength (-> Config.ip_adapter_scale; TODO tuning).")
+    # --- sampling / prompting ----------------------------------------------
+    g.add_argument("--diff-prompt", default=None,
+                   help="Optional text prompt / style hints (-> Config.diff_prompt).")
+    g.add_argument("--diff-negative-prompt", default=None,
+                   help="Optional negative prompt (-> Config.diff_negative_prompt).")
+    g.add_argument("--diff-steps", type=int, default=None,
+                   help="Denoising steps K (-> Config.diff_steps; TODO tuning per scheduler).")
+    g.add_argument("--guidance-scale", type=float, default=None,
+                   help="Classifier-free guidance scale (-> Config.guidance_scale; TODO tuning).")
+    g.add_argument("--denoise-strength", type=float, default=None,
+                   help="img2img denoise fraction, 1.0=full (-> Config.denoise_strength; TODO tuning).")
+    g.add_argument("--diff-scheduler", choices=("euler", "ddim", "dpm"), default=None,
+                   help="Diffusion scheduler (-> Config.diff_scheduler).")
+    # --- temporal latent-flow consistency (the Phase 2 differentiator) -----
+    g.add_argument("--temporal-strength", type=float, default=None,
+                   help="Per-step warped-latent fusion blend cap (-> Config.temporal_strength; TODO tuning).")
+    g.add_argument("--temporal-fuse-start", type=float, default=None,
+                   help="Fraction of steps where fusion begins (-> Config.temporal_fuse_start; TODO tuning).")
+    g.add_argument("--temporal-fuse-end", type=float, default=None,
+                   help="Fraction of steps where fusion ends (-> Config.temporal_fuse_end; TODO tuning).")
+    g.add_argument("--latent-consistency-weight", type=float, default=None,
+                   help="Latent-consistency pull weight (-> Config.latent_consistency_weight; TODO tuning).")
+    g.add_argument("--latent-reliability-gamma", type=float, default=None,
+                   help="Erosion exponent for downsampled reliability (-> Config.latent_reliability_gamma; TODO tuning).")
+    g.add_argument("--warp-space", choices=("latent", "pixel"), default=None,
+                   help="Warp the previous latent (default) or VAE-decode->warp->encode (-> Config.warp_space).")
+    g.add_argument("--use-anchor", action="store_const", const=True, default=None,
+                   help="Enable long-term anchor (frame-0) warp for drift (-> Config.use_anchor; §2.6).")
+    g.add_argument("--vae-factor", type=int, default=None,
+                   help="VAE spatial downsample factor (-> Config.vae_factor; change only if model differs).")
 
 
 def build_parser() -> argparse.ArgumentParser:

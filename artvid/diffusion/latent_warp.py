@@ -400,3 +400,123 @@ def combine_latent_reliability(
     return _consistency.combine_longterm_weights(
         reliabilities, method, invert=invert
     )
+
+
+def combine_anchor_reliability(
+    prev_rel: "torch.Tensor",
+    anchor_rel: "torch.Tensor",
+    *,
+    method: str = "closestFirst",
+) -> "tuple[torch.Tensor, torch.Tensor]":
+    """Combine the previous-frame and anchor-keyframe reliabilities (§2.6).
+
+    Two-reference convenience wrapper over :func:`combine_latent_reliability`
+    (and therefore over :func:`artvid.flow.consistency.combine_longterm_weights`)
+    for the common long-term-consistency case: the deepened video loop warps
+    BOTH the previous stylized latent and a fixed anchor (frame-0 / keyframe)
+    latent into the current frame, computes a :func:`latent_reliability` mask for
+    each, and calls this to obtain the per-reference blend weights used when the
+    engine fuses the two warped references into the init / per-step latent.
+
+    **Ordering (closest-first, REQUIRED).** The references must be supplied in
+    increasing temporal distance from the current frame: ``prev_rel`` is the
+    immediately-previous frame (closest), ``anchor_rel`` is the farther keyframe.
+    The default ``method="closestFirst"`` then gives the previous frame priority
+    — the anchor only claims latent cells the previous frame does *not* reliably
+    see (e.g. disocclusions, regions that have drifted) — which is exactly the
+    Phase 1 long-term-weight scheme (``processFlowWeights``) lifted to the latent
+    grid. Returning a fixed ``(prev_weight, anchor_weight)`` tuple (rather than a
+    list) makes the caller's unpacking unambiguous about which weight is which.
+
+    Args:
+        prev_rel: ``(N, 1, h, w)`` reliability of the warped *previous-frame*
+            latent (the closest reference), from :func:`latent_reliability`.
+        anchor_rel: ``(N, 1, h, w)`` reliability of the warped *anchor* latent
+            (the farther reference), from :func:`latent_reliability`.
+        method: ``'closestFirst'`` (default) | ``'normalize'`` | ``'none'`` — see
+            :func:`artvid.flow.consistency.combine_longterm_weights`.
+            ``'closestFirst'`` prioritizes ``prev_rel``; ``'normalize'`` instead
+            splits each cell proportionally between the two references.
+
+    Returns:
+        ``(prev_weight, anchor_weight)`` — the combined per-cell weights for the
+        previous and anchor references respectively, same shapes as the inputs.
+
+    Notes:
+        TODO(tuning): on M5 Max, verify on long clips whether anchor warp stays
+        reliable enough over many frames under ``closestFirst`` (the anchor flow
+        is composed/accumulated and may degrade), or whether keyframe
+        re-anchoring (Rerender-style keyframe + interpolation) is needed (§2.6).
+        Also compare ``closestFirst`` vs ``normalize`` for drift vs ghosting.
+    """
+    prev_weight, anchor_weight = combine_latent_reliability(
+        [prev_rel, anchor_rel], method=method
+    )
+    return prev_weight, anchor_weight
+
+
+def warp_previous_pixel(
+    prev_rgb: "torch.Tensor",
+    flow_px: "torch.Tensor",
+    *,
+    vae_factor: int = 8,
+) -> "_warp.WarpResult":
+    """Backward-warp the previous frame in PIXEL space (``warp_space='pixel'``).
+
+    The alternative to :func:`warp_latent` for ``config.warp_space == 'pixel'``.
+    Instead of warping in the VAE latent grid, this warps the previous *decoded*
+    stylized RGB frame at FULL image resolution by directly reusing the validated
+    Phase 1 :func:`artvid.flow.warp.warp_image`, and returns the warped RGB ready
+    to be re-encoded by the engine (``DiffusionEngine.encode``) into a latent.
+    **This function does NOT encode** — encoding is the engine's responsibility
+    (it owns the VAE); we only produce the pixel-space warped frame + valid mask.
+
+    Pixel vs latent warp — the trade-off (§2.5 / 3.2):
+
+    * **Accuracy.** Warping at full resolution applies the flow at its native
+      pixel scale and lets ``grid_sample`` interpolate the high-frequency RGB
+      detail directly, then the VAE re-encodes a coherent image. The latent warp
+      (:func:`warp_latent`) instead downsamples the flow to the coarse latent
+      grid (``H/f × W/f``) and warps 4-channel latents whose cells each cover an
+      ``f×f`` pixel block, so sub-block motion and fine structure are blurred /
+      quantized. The pixel path is therefore the more accurate, less "smeared"
+      option, especially for small or fast motions.
+    * **Cost.** The pixel path needs an EXTRA VAE decode (to get ``prev_rgb``
+      from the previous latent) *and* an extra VAE encode (of this warped RGB
+      back to a latent) per frame — two full VAE passes the latent warp avoids
+      entirely (it stays in latent space). On a long clip that is the dominant
+      added cost. ``vae_factor`` is accepted only for signature symmetry with
+      :func:`warp_latent` / call-site uniformity; the pixel warp is performed at
+      ``prev_rgb``'s own resolution and does not use it.
+
+    The warp is a **backward** warp: pass the RAFT *backward* flow (current →
+    previous), matching :func:`artvid.flow.warp.warp_image`'s convention, so the
+    previous frame's content is pulled into the current frame's coordinates.
+    Disoccluded / out-of-border pixels are left at the ``grid_sample`` zero pad
+    (``fill=None``) rather than the VGG mean: the companion reliability/``valid``
+    mask gates them downstream, and we do not want a constant RGB bias leaking
+    into the VAE encode.
+
+    Args:
+        prev_rgb: Previous stylized frame, RGB float in ``[0, 1]``, ``(3, H, W)``
+            or ``(N, 3, H, W)`` — the engine's VAE-decoded previous output.
+        flow_px: RAFT **backward** flow (current → previous), ``(2, H, W)`` or
+            ``(N, 2, H, W)`` in ``(u, v) = (dx, dy)`` pixel units at ``prev_rgb``
+            resolution.
+        vae_factor: Accepted for call-site symmetry with :func:`warp_latent`;
+            unused here (the warp runs at full pixel resolution). See the cost
+            note above.
+
+    Returns:
+        :class:`artvid.flow.warp.WarpResult` ``(image, valid)`` in PIXEL space:
+        ``image`` is the warped RGB ``[0, 1]`` (zero-padded outside the source),
+        ``valid`` the ``(N, 1, H, W)`` (or ``(1, H, W)``) in-border mask. The
+        engine encodes ``image`` to a latent; reliability for fusion is computed
+        from the flows + this ``valid`` via :func:`latent_reliability` after the
+        encode (the latent-grid mask), exactly as in the latent-warp path.
+    """
+    # Full-resolution backward warp via the Phase 1 pixel warp. fill=None keeps
+    # the zero pad (no VGG mean constant) so out-of-border pixels stay neutral
+    # for the subsequent VAE encode; the valid mask gates them downstream.
+    del vae_factor  # accepted for symmetry; see docstring.
+    return _warp.warp_image(prev_rgb, flow_px, fill=None)

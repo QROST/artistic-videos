@@ -56,7 +56,6 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-
 # ---------------------------------------------------------------------------
 # Frame-filename helpers
 # ---------------------------------------------------------------------------
@@ -200,11 +199,10 @@ def cmd_flow(args: argparse.Namespace) -> int:
         Process exit code (``0`` on success).
     """
     # Lazy imports so `--help` / unrelated subcommands work without torch.
-    import torch
 
     from artvid import device as _device
-    from artvid.flow import raft as _raft
     from artvid.flow import consistency as _consistency
+    from artvid.flow import raft as _raft
     from artvid.io import flow_io as _flow_io
     from artvid.io import image as _image
 
@@ -623,7 +621,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     """
     diffusion = _is_diffusion(args)
 
-    from artvid.io.video import extract_frames, encode_video
+    from artvid.io.video import encode_video, extract_frames
 
     video_path = Path(args.video)
     if not video_path.is_file():

@@ -43,7 +43,6 @@ from typing import Iterable, Mapping
 import torch
 from torch import nn
 
-
 # ---------------------------------------------------------------------------
 # Layer name <-> torchvision feature index mapping.
 #

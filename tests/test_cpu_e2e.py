@@ -38,7 +38,6 @@ import pytest
 # test bodies — importing them here would break collection without torch.
 from artvid.config import Config
 
-
 # ---------------------------------------------------------------------------
 # Small synthetic-image helpers (CPU, no I/O, no downloads)
 # ---------------------------------------------------------------------------

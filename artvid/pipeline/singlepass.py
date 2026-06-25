@@ -58,7 +58,6 @@ from typing import List, Optional, Sequence
 
 from artvid.config import Config
 
-
 # ---------------------------------------------------------------------------
 # Pure (torch-free) helpers: frame/flow filenames + long-term index selection
 # ---------------------------------------------------------------------------

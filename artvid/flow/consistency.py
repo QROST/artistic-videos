@@ -129,7 +129,6 @@ def _flow_gradient_sq(flow: "torch.Tensor") -> "torch.Tensor":
     Returns:
         ``(H, W)`` tensor of squared gradient magnitude.
     """
-    import torch
     import torch.nn.functional as F
 
     # Pad with edge replication so border derivatives are defined (the C++

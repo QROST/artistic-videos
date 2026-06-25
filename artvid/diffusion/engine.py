@@ -865,7 +865,6 @@ class DiffusionEngine:
         Also stashes resolution-correct SDXL ``time_ids`` for this frame so
         :meth:`_encode_prompts` builds them at the right size.
         """
-        import torch
         import torch.nn.functional as F
 
         c = control_image

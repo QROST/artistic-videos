@@ -22,7 +22,6 @@ from artvid.pipeline.multipass import (
     temporal_loss_enabled,
 )
 
-
 # ---------------------------------------------------------------------------
 # Pass direction / sequencing (artistic_video_multiPass.lua:147-150)
 # ---------------------------------------------------------------------------

@@ -68,7 +68,6 @@ from artvid.pipeline.singlepass import (
     format_flow_filename,
 )
 
-
 # ---------------------------------------------------------------------------
 # Pure (torch-free) helpers: pass direction + blend-weight selection
 # ---------------------------------------------------------------------------
@@ -317,12 +316,12 @@ def stylize_video_multipass(
 
     from artvid.device import enable_mps_fallback, get_device
     from artvid.io.image import deprocess, load_image, preprocess, save_image
-    from artvid.models.vgg import build_feature_net, split_activations
-    from artvid.optim.runner import run_optimization
     from artvid.losses.content import ContentLoss
     from artvid.losses.style import StyleLoss
     from artvid.losses.temporal import WeightedContentLoss
     from artvid.losses.tv import TVLoss
+    from artvid.models.vgg import build_feature_net, split_activations
+    from artvid.optim.runner import run_optimization
     from artvid.pipeline.stylize_image import (
         _build_style_targets,
         _normalized_blend_weights,

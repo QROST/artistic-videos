@@ -55,8 +55,9 @@ Hard constraints honoured here
   (``artvid/flow/raft.py``, ``artvid/cli.py``). This file is therefore
   ``py_compile``-able and ``--help``-safe without torch.
 * This is FOUNDATION/scaffolding written against the documented diffusers API; it
-  is meant to be **run and tuned on the user's M5 Max**. Every numerically- or
-  quality-sensitive choice is marked ``TODO(tuning)`` with what to verify.
+  is meant to be **run and tuned on your Apple Silicon Mac (any M-series with
+  MPS)**. Every numerically- or quality-sensitive choice is marked
+  ``TODO(tuning)`` with what to verify.
 """
 
 from __future__ import annotations
@@ -269,8 +270,9 @@ class DiffusionEngine:
         support on MPS has historically been spotty. On CUDA, bf16 is generally
         preferable. On CPU, stay float32 (fp16 CPU kernels are slow/unsupported).
 
-        TODO(tuning): On the M5 Max, verify fp16 is numerically stable through
-        the full SDXL + ControlNet + IP-Adapter stack (some VAEs need fp32 or the
+        TODO(tuning): On your Apple Silicon Mac (any M-series with MPS), verify
+        fp16 is numerically stable through the full SDXL + ControlNet +
+        IP-Adapter stack (some VAEs need fp32 or the
         ``madebyollin/sdxl-vae-fp16-fix`` to avoid black/NaN decodes). If the VAE
         decode produces NaNs/artifacts in fp16, either load the fp16-fix VAE or
         run *just* the VAE in fp32 (``pipe.vae.to(torch.float32)`` + cast latents)
@@ -345,11 +347,13 @@ class DiffusionEngine:
         pipe.set_ip_adapter_scale(self.ip_adapter_scale)
 
         # --- Memory knobs ---
-        # On 128 GB unified memory the full stack fits resident; CPU offload is
-        # slow on MPS so we do NOT enable it. TODO(tuning): at 1024²+ batched
-        # frames, ``enable_attention_slicing()`` / ``enable_vae_tiling()`` trade a
-        # little speed for lower peak — measure peak with MPS counters and decide
-        # (docs §1.3). Left OFF by default.
+        # Apple Silicon uses unified memory, so the GPU shares the Mac's RAM:
+        # there is no separate VRAM budget and the practical cap is your Mac's RAM
+        # minus what the OS/apps use. With enough headroom the full stack fits
+        # resident; CPU offload is slow on MPS so we do NOT enable it. On lower-RAM
+        # Macs (or at 1024²+ batched frames), ``enable_attention_slicing()`` /
+        # ``enable_vae_tiling()`` trade a little speed for lower peak — measure
+        # peak with MPS counters and decide (docs §1.3). Left OFF by default.
 
         self.pipe = pipe
         self.loaded = True
@@ -508,7 +512,7 @@ class DiffusionEngine:
 
         TODO(tuning): which subset best trades flicker-reduction vs ghosting/cost
         is hardware/content dependent (docs §6); mid+up-only is a common cheaper
-        sweet spot. Verify on the M5 Max.
+        sweet spot. Verify on your Apple Silicon Mac (any M-series with MPS).
         """
         spec = (self.cross_frame_attention_layers or "all").strip().lower()
         if spec in ("", "all"):
@@ -820,7 +824,7 @@ class DiffusionEngine:
         if seed is not None:
             # MPS generators must live on CPU in some torch builds; using a CPU
             # generator for randn then moving is the portable path.
-            # TODO(tuning): confirm MPS RNG path on the M5 Max torch build.
+            # TODO(tuning): confirm MPS RNG path on your Apple Silicon Mac's torch build.
             generator = torch.Generator(device="cpu").manual_seed(int(seed))
         noise = torch.randn(
             (1, self._latent_channels(), h, w),

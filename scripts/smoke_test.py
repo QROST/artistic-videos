@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end smoke test for both artvid engines (run ON the M5 Max).
+"""End-to-end smoke test for both artvid engines (run on your Apple Silicon Mac).
 
 This is a *fast, tiny* sanity check that the full Phase 1 (``optim``) and Phase 2
 (``diffusion``) style-transfer pipelines actually run on the user's hardware and
@@ -35,7 +35,9 @@ subprocess, validating the ``build_config`` flag wiring in ``artvid/cli.py`` end
 to end.
 
 IMPORTANT: like :mod:`scripts.benchmark`, this is meant to RUN ON THE USER'S
-MACHINE (Apple Silicon M5 Max with a torch MPS build, 128GB unified memory). The
+MACHINE (any Apple Silicon M-series Mac with a torch MPS build). Apple Silicon uses
+unified memory, so the GPU shares the Mac's RAM — there is no separate VRAM budget;
+the practical cap is your Mac's RAM minus what the OS/apps use. The
 development/CI environment for this port has **no GPU and no torch installed**,
 so do not execute it there. It imports torch/diffusers and the artvid pipeline
 **lazily inside main()** so the module itself imports cleanly without torch
@@ -75,8 +77,8 @@ from typing import List, Optional, Tuple
 # Pure / torch-free helpers (kept importable without torch)
 # ---------------------------------------------------------------------------
 
-# Default tiny smoke settings: small enough to finish in seconds on the M5 Max
-# while still exercising the temporal warp/flow path (>=2 frames).
+# Default tiny smoke settings: small enough to finish in seconds on your Apple
+# Silicon Mac while still exercising the temporal warp/flow path (>=2 frames).
 DEFAULT_FRAMES = 3
 DEFAULT_RESOLUTION = (64, 96)  # (H, W) — small but not degenerate.
 DEFAULT_OPTIM_ITERS = 4        # L-BFGS iterations per frame (first, subsequent).
@@ -100,7 +102,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         prog="smoke_test",
         description=(
             "Fast end-to-end smoke test for the artvid optim (and optionally "
-            "diffusion) engines. Run on the M5 Max."
+            "diffusion) engines. Run on your Apple Silicon Mac (any M-series with MPS)."
         ),
     )
     p.add_argument(

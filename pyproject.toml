@@ -45,7 +45,7 @@ dev = ["pytest>=7.4", "ruff>=0.4"]
 #   * peft>=0.9 — LoRA / adapter plumbing diffusers uses for IP-Adapter weights.
 #
 # NOTE: these are conservative floors, not validated pins. Confirm exact
-# versions on the M5 Max (Metal/MPS) hardware and pin a known-good set there,
+# versions on your Apple Silicon Mac (any M-series, Metal/MPS) and pin a known-good set there,
 # since diffusers/transformers/peft interlock tightly across releases.
 diffusion = [
     "diffusers>=0.27",

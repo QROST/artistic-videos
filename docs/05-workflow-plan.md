@@ -40,7 +40,7 @@
 
 ### M4 — CLI 一条龙 + 基准
 - `cli-run`：`artvid run` 端到端。
-- `bench`：M5 Max 基准表（注：基准需真实 M5 Max；workflow 在本环境只能产出脚本与占位，真实数字由用户在 M5 Max 上回填）。
+- `bench`：在你的 Apple Silicon Mac（任意 M 系列 / MPS）上测得的基准表（注：基准需真实硬件；workflow 在本环境只能产出脚本与占位，真实数字由用户在自己的 Apple Silicon Mac 上回填）。
 - `docs-usage`：用法文档 + README 更新。
 - `verify-m4`：端到端 smoke。
 
@@ -106,13 +106,13 @@ if (!v0.passed) return { stoppedAt: 'M0', v0 }   // 闸门
 - **schema 化验收**：verify agent 用 `schema` 强制返回 `{passed, failures, notes}`，主循环据此决定是否过闸。
 - **worktree 隔离**：仅在同一 `parallel` 内多 agent 写文件时使用；集成 agent 在主工作树合并。
 - **闸门即 `return`**：某里程碑未过则停下并报告，由人决定是否继续/修正，符合「人在环」。
-- **基准的现实约束**：真实 M5 Max 数字无法在本 CI 环境产出；`bench` agent 只产出可复跑脚本与表格模板，数字由用户在 M5 Max 回填。
+- **基准的现实约束**：真实硬件数字无法在本 CI 环境产出；`bench` agent 只产出可复跑脚本与表格模板，数字由用户在自己的 Apple Silicon Mac（任意 M 系列 / MPS）上回填。
 
 ## 5. 启动条件（什么时候真正跑 workflow）
 
 1. 本批设计文档已 review、合入分支。✅（本 PR）
 2. 用户确认 Phase 1 范围与里程碑无异议。
-3. 明确 workflow 运行的算力预期（本环境无 M5 Max / 无 GPU，代码实现与单测可做，真机性能基准需用户侧执行）。
+3. 明确 workflow 运行的算力预期（本环境无 Apple Silicon Mac / 无 GPU，代码实现与单测可做，真机性能基准需用户侧执行）。
 
 满足后，以「ultracode / use a workflow」显式授权方式启动 `artvid-phase1` workflow。
 

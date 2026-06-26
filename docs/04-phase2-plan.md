@@ -46,7 +46,7 @@ diffusers, transformers, accelerate, safetensors
 controlnet_aux            # 结构预处理器（depth/lineart/hed）
 # 模型权重通过 huggingface 下载；注意许可证
 ```
-- 在 M5 Max 上：扩散推理走 MPS；128GB 统一内存足以容纳 SDXL + ControlNet + IP-Adapter 同时驻留。
+- 在你的 Apple Silicon Mac（任意 M 系列 / MPS）上：扩散推理走 MPS；统一内存由 GPU 与 Mac 共享，没有独立显存预算——只要 RAM 足够（约 7–12 GB fp16 权重外加激活），即可容纳 SDXL + ControlNet + IP-Adapter 同时驻留，RAM 紧张时可降分辨率并启用 attention slicing / VAE tiling。
 - 速度预期：每帧秒级（远快于 Phase 1 的逐帧优化）。
 
 ## 5. 里程碑（草案）

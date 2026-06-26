@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M5 Max performance benchmark for single-pass video stylization.
+"""Apple Silicon (MPS) performance benchmark for single-pass video stylization.
 
 This harness is the M4 "性能基准" deliverable from ``docs/03-phase1-plan.md``
 (see the M4 acceptance row: *基准表：分辨率 × 每帧迭代数 × 每帧墙钟 × 峰值内存 ×
@@ -18,8 +18,8 @@ What it records, per (resolution, frame)
 
 It then prints a Markdown table the user can paste straight into the docs.
 
-IMPORTANT: this script is meant to RUN ON THE USER'S MACHINE (an Apple Silicon
-M5 Max with a torch MPS build). The development/CI environment for this port has
+IMPORTANT: this script is meant to RUN ON THE USER'S MACHINE (any Apple Silicon
+M-series Mac with a torch MPS build). The development/CI environment for this port has
 **no GPU and no torch installed**, so do not execute it there. It is written
 against the documented torch + artvid API and is exercised on real hardware.
 
@@ -369,7 +369,7 @@ def _parse_resolution(text: str) -> Tuple[int, int]:
 def _build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Benchmark artvid single-pass stylization on the local "
-        "accelerator (M5 Max / MPS, CUDA, or CPU).",
+        "accelerator (Apple Silicon / MPS, CUDA, or CPU).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument(
@@ -453,7 +453,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     except ImportError:
         print(
             "ERROR: torch is not installed. This benchmark must run on the "
-            "user's machine (M5 Max with a torch MPS build).",
+            "user's machine (any Apple Silicon M-series Mac with a torch MPS build).",
             file=sys.stderr,
         )
         return 2

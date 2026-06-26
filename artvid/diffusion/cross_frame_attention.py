@@ -100,7 +100,8 @@ This is FOUNDATION/scaffolding written against the documented diffusers attentio
 processor API. It is **not validated on hardware** (no GPU/torch here). Every
 quality-sensitive choice — *which* layers to apply it to, *prev vs anchor* as the
 reference, the bank-collection protocol, and interaction with the SDPA fast path —
-is marked ``TODO(tuning)`` with what to verify on the M5 Max.
+is marked ``TODO(tuning)`` with what to verify on your Apple Silicon Mac (any
+M-series with MPS).
 """
 
 from __future__ import annotations
@@ -184,7 +185,7 @@ class CrossFrameAttnProcessor:
     same loop). If the reference batch size does not match the current batch, we
     skip injection for that layer rather than mis-align (guarded in :meth:`__call__`).
 
-    TODO(tuning) — to validate on the M5 Max:
+    TODO(tuning) — to validate on your Apple Silicon Mac (any M-series with MPS):
       * **Which layers.** Applying cross-frame attention to *every* self-attention
         layer is the strongest but can over-smooth / ghost. Common practice limits
         it to the mid + up blocks (coarser, more semantic) and/or to a subset of

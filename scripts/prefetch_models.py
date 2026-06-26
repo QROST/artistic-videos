@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Pre-download all model weights artvid needs, so the first stylization is fast.
 
-Run this ONCE on the user's machine (an Apple Silicon M5 Max with a torch MPS
-build) after ``pip install -e ".[all]"`` and before the first ``artvid stylize``
+Run this ONCE on the user's machine (any Apple Silicon M-series Mac with a torch
+MPS build) after ``pip install -e ".[all]"`` and before the first ``artvid stylize``
 / ``artvid run``. Both engines lazily download their weights on first use, which
 otherwise stalls the first invocation for several minutes (and several GB for the
 diffusion stack). Fetching them ahead of time means the real run starts warm.
@@ -37,7 +37,7 @@ This module imports cleanly without torch / torchvision / huggingface_hub
 present (e.g. on the CI box): every heavy import lives inside :func:`main` (or
 the helpers it calls), so ``python -c "import scripts.prefetch_models"`` and
 ``py_compile`` work with only the standard library available. The downloads of
-course require the real dependencies installed on the M5 Max.
+course require the real dependencies installed on your Apple Silicon Mac.
 
 Usage
 -----

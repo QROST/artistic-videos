@@ -944,8 +944,9 @@ def _add_diffusion_flags(p: argparse.ArgumentParser) -> None:
     "diffusion" field-group defaults (docs/07-phase2-design.md §4.1) intact. These
     flags are ignored by the optim engine. Numerically/qualitatively sensitive
     knobs (controlnet_scale, ip_adapter_scale, guidance_scale, the temporal-flow
-    consistency strength/window, reliability gamma) are TODO(tuning) on the M5 Max
-    — the CLI just surfaces them; their defaults live in Config.
+    consistency strength/window, reliability gamma) are TODO(tuning) on your
+    Apple Silicon Mac (any M-series with MPS) — the CLI just surfaces them; their
+    defaults live in Config.
     """
     g = p.add_argument_group(
         "diffusion engine (Phase 2; only with --engine diffusion)"

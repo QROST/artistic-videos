@@ -127,9 +127,9 @@ video.mp4
 
 **决策**：默认用 **A**（torchvision），把它作为长期主线；同时提供一个**可选的 caffe 权重加载路径（B）**，给需要忠实复现 2016 论文数值的用户。`00-overview.md` 的非目标已声明我们追求**视觉等价/更好**而非逐比特一致。两套权重对应的 `preprocess` 必须分别正确（A 用 ImageNet mean/std；B 用 BGR + caffe 均值）。
 
-## 6. MPS / 128GB 相关注意点
+## 6. MPS / 统一内存相关注意点
 
 - `grid_sample`、`conv2d` 等在近版 PyTorch 的 MPS 后端均支持；个别算子可能回退 CPU，用 `PYTORCH_ENABLE_MPS_FALLBACK=1` 兜底，并在基准中记录回退点。
 - L-BFGS 的历史向量在 host 上维护，张量运算在 MPS 上，正常。
-- 高分辨率受益于统一内存：把分辨率作为 CLI 参数，默认原分辨率，不再像旧版那样强制降分辨率。
-- 性能基准（M5 Max）应记录：每帧迭代数、每帧墙钟、峰值内存、是否触发 CPU 回退。
+- **统一内存（无独立显存）**：Apple Silicon 的 GPU 与 Mac 共享同一份 RAM，没有单独的 VRAM 预算。旧 CUDA 版受 4–12 GB 显存限制；这里的上限只是你这台 Mac 的 RAM 减去系统/应用占用——RAM 越大可用的分辨率与余量越高，RAM 越小则用更低分辨率/更轻的设置，但仍能跑。把分辨率作为 CLI 参数，默认原分辨率，不再像旧版那样强制降分辨率。各内存档位的具体取舍见 quickstart 的 [Memory & RAM considerations](08-quickstart.md#memory--ram-considerations)。
+- 性能基准应在你的 Apple Silicon Mac（任意支持 MPS 的 M 系列芯片）上记录：每帧迭代数、每帧墙钟、峰值内存、是否触发 CPU 回退。这些数字均为估计、从未在真实硬件上验证过。

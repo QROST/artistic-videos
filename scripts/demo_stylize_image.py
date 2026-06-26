@@ -9,7 +9,7 @@ from an example/ frame + a style image").
 It is *not* executed in the build/scaffold environment (torch is unavailable
 there); run it on your Apple Silicon Mac (any M-series with MPS), e.g.::
 
-    python examples/demo_stylize_image.py \
+    python scripts/demo_stylize_image.py \
         --content example/marple8_01.ppm \
         --style example/seated-nude.jpg \
         --output out/marple8_stylized.png \

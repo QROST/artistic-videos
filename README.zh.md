@@ -78,7 +78,7 @@ artvid --engine diffusion run input.mp4 example/seated-nude.jpg   # 扩散引擎
 
 # 原始实现（Torch7 / Lua，2016）
 
-> 以下是本仓库**原始** Torch7/Lua 实现（论文作者 Ruder 等）的中文翻译。新的 PyTorch 版（`artvid`）见上文；这部分作为原始参考保留。
+> 以下是本仓库**原始** Torch7/Lua 实现（论文作者 Ruder 等）的中文翻译。原始代码现保存在 [`legacy/`](legacy/) 目录（作为历史与 parity 参考，不能在 Apple Silicon 上运行）；下文提到的脚本/文件路径均相对于 `legacy/`。新的 PyTorch 版（`artvid`）见上文。
 
 这是论文《[Artistic style transfer for videos](http://arxiv.org/abs/1604.08610)》的 Torch 实现，基于 Justin Johnson 的 neural-style 代码：<https://github.com/jcjohnson/neural-style>。
 

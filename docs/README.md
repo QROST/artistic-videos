@@ -23,15 +23,20 @@
 | 03 | [phase1-plan](./03-phase1-plan.md) | M0–M4 里程碑、验证策略、风险、排序 |
 | 04 | [phase2-plan](./04-phase2-plan.md) | 扩散式视频风格化方向、复用 Phase 1、风险 |
 | 05 | [workflow-plan](./05-workflow-plan.md) | 用 Workflow 工具执行 Phase 1 的 agent 拆分、DAG、脚本骨架 |
+| 06 | [phase1-known-deviations](./06-phase1-known-deviations.md) | 已知 parity 偏差与修复记录（含 M2–M4、Phase 2） |
+| 07 | [phase2-design](./07-phase2-design.md) | 扩散方案的具体可实现设计（模型栈、latent 一致性算法） |
+| 08 | [m5max-quickstart](./08-m5max-quickstart.md) | M5 Max 上手：安装 → 预拉取 → smoke → 出片 |
+| 09 | [retrospective](./09-retrospective.md) | 复盘：起点 vs 现状、做了什么、成果、经验教训、范式对比 |
 
 ## 当前状态
 
 - [x] 方向确认：PyTorch + MPS，分阶段，CLI
 - [x] 设计文档与规划（本目录）
-- [ ] 用户 review 设计 → 确认 Phase 1 范围
-- [ ] 启动 `artvid-phase1` workflow 实现 Phase 1
-- [ ] Phase 1 在 M5 Max 上的真机性能基准（需用户侧执行）
-- [ ] Phase 2 规划细化与实现
+- [x] Phase 1（M0–M4）实现并合并：optim 引擎 + RAFT 光流栈 + CLI
+- [x] Phase 2 基础 + 深化并合并：扩散引擎 + latent 一致性 + masked init/anchor/cross-attn/pixel-warp
+- [x] CI（GitHub runner，CPU torch 全套测试）守护每个 PR
+- [ ] **在 M5 Max 上的真机验证**：扩散画质、时序稳定性、性能基准（需用户侧执行）
+- [ ] 据真机反馈做有依据的扩散调参（各 `TODO(tuning)`）
 
 ## 如何往下走
 

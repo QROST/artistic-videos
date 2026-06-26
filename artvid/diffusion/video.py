@@ -84,8 +84,9 @@ Hard constraints honoured here
   module is therefore ``py_compile``-able and importable without torch; only the
   *call* to :func:`stylize_video_diffusion` needs the frameworks.
 * This is FOUNDATION/scaffolding written against the documented engine API; it is
-  meant to be **run and tuned on the user's M5 Max**. Every numerically- or
-  quality-sensitive choice is marked ``TODO(tuning)`` with what to verify.
+  meant to be **run and tuned on your Apple Silicon Mac (any M-series with
+  MPS)**. Every numerically- or quality-sensitive choice is marked
+  ``TODO(tuning)`` with what to verify.
 """
 
 from __future__ import annotations
@@ -405,7 +406,8 @@ def stylize_video_diffusion(
 
     Notes:
         TODO(tuning): this whole loop is the P2-M2 milestone — it must be run and
-        tuned on the M5 Max (temporal_strength × fuse window, init strength,
+        tuned on your Apple Silicon Mac (any M-series with MPS)
+        (temporal_strength × fuse window, init strength,
         reliability gamma, seed strategy; docs §5 items 1-5). Defaults above are
         starting points only.
     """

@@ -163,7 +163,8 @@ def autocast_dtype(device):
     if dev == "cuda":
         return torch.bfloat16
     if dev == "mps":
-        # TODO(tuning): bf16-vs-fp16 on the M5 Max; default fp16 for op coverage.
+        # TODO(tuning): bf16-vs-fp16 on your Apple Silicon Mac (any M-series with
+        # MPS); default fp16 for op coverage.
         return torch.float16
     return torch.float32  # cpu / unknown
 
@@ -176,7 +177,8 @@ def device_info(prefer: str | None = None) -> dict:
     """Return a small dict describing the selected device + dtype policy.
 
     Useful for a one-line startup banner and for debugging "is it actually on the
-    GPU?" on the M5 Max. Lazily imports torch; safe to call once at run start.
+    GPU?" on your Apple Silicon (M-series) Mac. Lazily imports torch; safe to call
+    once at run start.
 
     Returns keys: ``device`` (selected backend string), ``mps_available``,
     ``cuda_available``, ``mps_fallback`` (the env-var value, or ``None`` if

@@ -5,7 +5,7 @@
 ## 2026 Modernization — PyTorch port (`artvid`)
 
 This repository now ships a **PyTorch + Metal (MPS) rewrite**, packaged as `artvid`,
-targeting **Apple Silicon / M5 Max** (128 GB unified memory, MPS backend with CPU fallback).
+targeting **any Apple Silicon (M-series) Mac** (Metal/MPS backend with CPU fallback).
 It faithfully reimplements the optimization-based video style transfer of Ruder et al.
 (2016) and adds an optional modern **diffusion engine**.
 
@@ -14,16 +14,18 @@ It faithfully reimplements the optimization-based video style transfer of Ruder 
 | Engine | Method | Notes |
 | --- | --- | --- |
 | `optim` (default) | Per-frame L-BFGS pixel optimization with a frozen VGG-19, Gram style loss, and optical-flow temporal consistency | Faithful port of the 2016 paper. Arbitrary style, no training. Minutes/frame. |
-| `diffusion` | SDXL + depth ControlNet + IP-Adapter, with the 2016 optical-flow temporal idea grafted into **latent** space | Zero-shot style from a reference image, no training. Seconds/frame. Foundation; quality tuning on hardware. |
+| `diffusion` | SDXL + depth ControlNet + IP-Adapter, with the 2016 optical-flow temporal idea grafted into **latent** space | Zero-shot style from a reference image, no training. Seconds/frame. Foundation; quality tuning on your Apple Silicon Mac. |
 
 **What changed vs. the original** (full write-up: [docs/09-retrospective.md](docs/09-retrospective.md)):
-Torch7/Lua → PyTorch+MPS · CUDA-only → runs on Apple Silicon · DeepFlow/DeepMatching/
-consistencyChecker → **RAFT** · per-PR **CI** runs the full CPU-torch test suite ·
-neither engine trains a network or collects data (see the paradigm table in the retrospective).
+Torch7/Lua → PyTorch+MPS · CUDA-only → runs on any M-series Mac · separate VRAM budget →
+unified memory (the GPU shares your Mac's RAM, so the practical limit is your machine's RAM,
+not a fixed VRAM cap) · DeepFlow/DeepMatching/consistencyChecker → **RAFT** · per-PR **CI**
+runs the full CPU-torch test suite · neither engine trains a network or collects data
+(see the paradigm table in the retrospective).
 
 **Documentation:**
 - [docs/README.md](docs/README.md) — design & documentation index
-- [docs/08-m5max-quickstart.md](docs/08-m5max-quickstart.md) — Apple M5 Max quickstart
+- [docs/08-quickstart.md](docs/08-quickstart.md) — Apple Silicon (M-series) quickstart; see its **Memory & RAM** section for sizing guidance by unified-memory size
 - [docs/usage.md](docs/usage.md) — end-user CLI usage guide
 - [docs/09-retrospective.md](docs/09-retrospective.md) — what we did, results, lessons learned
 

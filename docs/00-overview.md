@@ -25,11 +25,11 @@
 | loadcaffe + caffe 版 VGG-19 | caffe 生态停滞 |
 | DeepFlow + DeepMatching（CPU 静态二进制） | 老旧、仅 CPU、质量落后于学习式光流 |
 
-结论：**现有 Lua/Torch7 代码在 M5 Max 上基本无法有意义地运行**，必须换框架重写。
+结论：**现有 Lua/Torch7 代码在 Apple Silicon Mac 上基本无法有意义地运行**，必须换框架重写。
 
 ## 2. 目标
 
-1. **能在 M5 Max（128GB 统一内存）上跑通**，吃满 Apple GPU（Metal/MPS）。
+1. **能在 Apple Silicon Mac 上跑通**，吃满 Apple GPU（Metal/MPS）。
 2. **方法学上忠实复刻** 2016 论文（单遍 + 多遍 + 长时一致性），结果质量不低于原版。
 3. **用现代学习式光流（RAFT）替换 DeepFlow/DeepMatching**，提质提速。
 4. **打磨成一条命令出片的 CLI 工具**（替代现在的 `stylizeVideo.sh`）。
@@ -51,7 +51,7 @@
 
 ### D2 — 范围：分阶段（先复刻，后 SOTA）
 
-- **Phase 1**：忠实现代化 2016 优化法 + RAFT 光流，先在 M5 Max 跑通并验证质量。
+- **Phase 1**：忠实现代化 2016 优化法 + RAFT 光流，先在你的 Apple Silicon Mac（任意 M 系列 / MPS）上跑通并验证质量。
 - **Phase 2**：扩散式视频风格化；复用 Phase 1 的光流/warp/一致性模块，把光流一致性思想当作 latent 正则项。
 - **理由**：Phase 1 风险低、里程碑清晰，且产出（光流栈、I/O、CLI 骨架）能被 Phase 2 复用。
 
@@ -67,21 +67,21 @@
 ## 4. 非目标（Non-goals）
 
 - 不追求与 2016 输出**逐比特**一致（VGG 权重来源不同会有数值差异；见架构文档 parity 小节）。我们追求**视觉质量等价或更好**。
-- Phase 1 不做实时；逐帧优化在 M5 Max 上预期每帧数十秒到一两分钟级别，可接受。
+- Phase 1 不做实时；逐帧优化在你的 Apple Silicon Mac 上预期每帧数十秒到一两分钟级别，可接受。
 - 不维护 CUDA/OpenCL 老后端；但代码不硬编码 MPS，`mps|cuda|cpu` 由设备层自动选择。
 
 ## 5. 成功标准
 
-- **Phase 1 验收**：用 `example/` 帧序列，单遍与多遍均能在 M5 Max 上产出时序稳定（无明显闪烁）的风格化视频；RAFT 光流路径替代 DeepFlow；一条 CLI 命令端到端跑通；附 M5 Max 性能基准。
+- **Phase 1 验收**：用 `example/` 帧序列，单遍与多遍均能在你的 Apple Silicon Mac 上产出时序稳定（无明显闪烁）的风格化视频；RAFT 光流路径替代 DeepFlow；一条 CLI 命令端到端跑通；附在你的 Apple Silicon Mac（任意 M 系列 / MPS）上测得的性能基准。
 - **Phase 2 验收**：扩散引擎产出质量明显优于 Phase 1 的风格化视频，且时序一致性不差于 Phase 1；同一 CLI 通过 `--engine diffusion` 切换。
 
-## 6. 128GB 统一内存为什么是优势
+## 6. 统一内存为什么是优势
 
-原版最大的工程约束是**显存**（README 反复强调 450×350 要 4GB、Titan X 12GB 最多 960×540）。M5 Max 是统一内存，「显存」上限≈128GB − 系统占用，于是：
+原版最大的工程约束是**显存**（README 反复强调 450×350 要 4GB、Titan X 12GB 最多 960×540）。Apple Silicon 是统一内存——GPU 与 CPU 共享 Mac 的 RAM，没有独立的「显存」预算；上限≈你这台 Mac 的 RAM − 系统/应用占用，于是：
 
-- 可直接处理 4K 整帧，不必为 OOM 降分辨率（原版最大痛点消失）。
+- RAM 越多，可处理的分辨率越高、headroom 越大，不必为 OOM 降分辨率（原版最大痛点消失）；RAM 较小则用更低分辨率/更轻设置，但仍能跑。
 - 可一次性 batch 多帧、把光流与风格优化放在一起，提高吞吐。
-- Phase 2 的扩散大模型也能容纳在统一内存里。
+- Phase 2 的扩散大模型在 RAM 足够时也能容纳在统一内存里。
 
 ## 7. 文档地图
 

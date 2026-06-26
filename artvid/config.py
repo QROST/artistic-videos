@@ -192,8 +192,9 @@ class Config:
     # cross-frame / reference attention): each frame attends to the anchor (and/or
     # previous) frame's keys/values to share appearance and cut flicker. Consumed
     # lazily by artvid.diffusion.engine; default off so the baseline path is
-    # unchanged. TODO(tuning): on M5 Max, A/B with/without and measure flicker vs
-    # cost; cross-attn roughly doubles self-attn memory per enabled layer.
+    # unchanged. TODO(tuning): on your Apple Silicon Mac (any M-series with MPS),
+    # A/B with/without and measure flicker vs cost; cross-attn roughly doubles
+    # self-attn memory per enabled layer.
     cross_frame_attention: bool = False
     # Which UNet self-attention layers get the cross-frame treatment.
     # "all"  => every self-attention (transformer) block;
@@ -201,7 +202,8 @@ class Config:
     # "up"/"mid"/"down" => only blocks in that UNet stage;
     # or a comma-separated list of block-name substrings (e.g. "up_blocks.1").
     # Parsed/matched downstream in the engine. TODO(tuning): mid+up-only is often
-    # enough and cheaper than "all"; verify on M5 Max.
+    # enough and cheaper than "all"; verify on your Apple Silicon Mac (any
+    # M-series with MPS).
     cross_frame_attention_layers: str = "all"
 
     # Base-noise strategy across frames (§5.5). Controls the epsilon used to
@@ -212,7 +214,7 @@ class Config:
     #               tracks motion (can improve consistency on large motion);
     #   "random" => fresh per-frame noise (most diverse, least stable).
     # The `seed` field above seeds the generator. TODO(tuning): compare fixed vs
-    # warped for flicker on M5 Max.
+    # warped for flicker on your Apple Silicon Mac (any M-series with MPS).
     noise_seed_mode: str = "fixed"
 
     # Long-term anchor selection (used only when use_anchor; §2.6).

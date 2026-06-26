@@ -3,9 +3,9 @@
 > **Status:** concrete, implementable spec. Turns the directional `docs/04-phase2-plan.md`
 > into the design the implementation agents follow.
 > **Scope of this increment:** FOUNDATION / scaffolding. The code is written against the
-> documented `diffusers` / `torch` API and is meant to be **run and tuned on the user's
-> M5 Max (128 GB unified memory)**. Numerically/qualitatively sensitive choices are marked
-> `TODO(tuning)` with exactly what to verify on hardware.
+> documented `diffusers` / `torch` API and is meant to be **run and tuned on your Apple
+> Silicon (M-series) Mac with the Metal/MPS backend**. Numerically/qualitatively sensitive
+> choices are marked `TODO(tuning)` with exactly what to verify on hardware.
 > **Hard dependency note:** `torch` / `diffusers` are *not* installed in the authoring
 > environment. Nothing here may be executed end-to-end here; only `py_compile` and
 > torch-free unit tests run. Treat every numeric default below as a starting point.
@@ -78,7 +78,7 @@ For fast iteration and as a low-memory fallback: `runwayml/stable-diffusion-v1-5
 fewer parameters. The engine is written backbone-agnostic (§3) so SD1.5 ↔ SDXL is a config
 swap, not a code fork.
 
-### 1.3 Unified-memory footprint on a 128 GB M5 Max
+### 1.3 Unified-memory footprint on an Apple Silicon Mac
 
 Rough resident footprints (fp16 weights; activations dominate at high resolution):
 
@@ -93,12 +93,15 @@ Rough resident footprints (fp16 weights; activations dominate at high resolution
 | **Total resident** | **~12–13 GB weights** |
 
 Plus per-step activations (SDXL at 1024² with a ControlNet roughly 6–10 GB peak transient).
-**Conclusion:** 128 GB unified memory comfortably holds the full SDXL + ControlNet +
-IP-Adapter + RAFT stack resident simultaneously with large headroom — no CPU offload needed,
-which is good because MPS↔CPU offload is slow. `TODO(tuning)`: confirm real peak with MPS
-memory counters at the target resolution; decide whether `enable_attention_slicing` /
-`enable_vae_tiling` is worth enabling (they trade ~speed for lower peak; likely unnecessary
-at 128 GB but useful at 1024²+ batched frames).
+**Conclusion:** Apple Silicon uses unified memory, so the GPU shares your Mac's RAM and
+there is no separate VRAM budget — the practical cap is your Mac's RAM minus what the OS and
+apps use, not a fixed device limit. On a Mac with enough RAM this holds the full SDXL +
+ControlNet + IP-Adapter + RAFT stack resident simultaneously with headroom and no CPU offload
+(good, because MPS↔CPU offload is slow); on a lower-RAM Mac, keep fp16, enable attention
+slicing and VAE tiling, and lower the resolution. More RAM = higher resolution and more
+headroom. `TODO(tuning)`: confirm real peak with MPS memory counters at the target
+resolution; decide whether `enable_attention_slicing` / `enable_vae_tiling` is worth enabling
+(they trade ~speed for lower peak; helpful on tighter RAM or at 1024²+ batched frames).
 
 ---
 
@@ -419,7 +422,7 @@ diffusion engine slots into the *existing* `run` orchestration with a single dis
 
 ## 5. Open questions / what MUST be tuned on hardware
 
-Everything here needs the M5 Max; defaults above are starting points.
+Everything here needs your Apple Silicon Mac (any M-series with MPS); defaults above are starting points.
 
 1. **`warp_latent` exactness at the latent grid.** Verify the flow rescale (`/vae_factor` vs
    per-axis `h/H, w/W`) and `align_corners` give a *pixel-accurate* latent warp on a synthetic

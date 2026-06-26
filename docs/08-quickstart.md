@@ -1,8 +1,10 @@
-# artvid — Apple M5 Max Quickstart
+# artvid — Apple Silicon Quickstart
 
-A concise, copy-paste path to a clean first run on an **Apple M5 Max**
-(Metal / MPS, 128 GB unified memory). It covers system prep, install, weight
-prefetch, and the three commands (`flow` / `stylize` / `run`) for both engines.
+A concise, copy-paste path to a clean first run on **any Apple Silicon
+(M-series) Mac** (Metal / MPS, any unified-memory size). It covers system prep,
+install, weight prefetch, and the three commands (`flow` / `stylize` / `run`)
+for both engines. See [Memory & RAM considerations](#memory--ram-considerations)
+to pick settings that fit your Mac's RAM.
 
 For the **full flag reference**, see [`docs/usage.md`](usage.md). For tuning the
 diffusion engine, see [`docs/07-phase2-design.md`](07-phase2-design.md) and the
@@ -54,7 +56,7 @@ pip install -e .          # optim engine only
 > The diffusion extras (`.[all]` / `.[diffusion]`) pull several large packages.
 > The pinned lower bounds are conservative floors — if `diffusers` /
 > `transformers` / `peft` complain about version interlock, pin a known-good set
-> on this machine (see the note in `pyproject.toml`).
+> on your machine (see the note in `pyproject.toml`).
 
 ---
 
@@ -167,7 +169,7 @@ CLI flags but their **defaults are `TODO(tuning)`** on this hardware:
 - CLI flags that override them are in `artvid/cli.py` (`_add_diffusion_flags`).
 - Design rationale + recommended starting points: `docs/07-phase2-design.md`.
 
-Key flags to sweep first on the M5 Max:
+Key flags to sweep first on your Apple Silicon Mac (any M-series with MPS):
 `--controlnet-scale`, `--ip-adapter-scale`, `--guidance-scale`, `--diff-steps`,
 `--denoise-strength`, and the temporal trio `--temporal-strength` /
 `--temporal-fuse-start` / `--temporal-fuse-end` (plus
@@ -178,6 +180,32 @@ engines, see [`docs/usage.md`](usage.md).
 
 ---
 
+## Memory & RAM considerations
+
+Apple Silicon uses **unified memory**, so the GPU shares your Mac's RAM — there
+is no separate VRAM budget. The original CUDA version was capped by 4–12 GB of
+VRAM; here the cap is just your Mac's RAM minus what the OS and apps use. More
+RAM = higher resolution and more headroom; less RAM = lower resolution / lighter
+settings, but it still works.
+
+- **optim engine:** memory scales ~linearly with frame resolution. To fit
+  smaller RAM: lower the resolution, use `--pooling avg`, or use Adam instead of
+  L-BFGS (less memory). Runs on any M-series Mac.
+- **diffusion engine:** must hold SDXL + ControlNet + IP-Adapter (~7–12 GB of
+  weights in fp16) plus activations. To fit smaller RAM: keep fp16, enable
+  attention slicing and VAE tiling, lower resolution, process one frame at a
+  time. On low-RAM Macs SDXL diffusion may be tight or impractical; smaller
+  diffusion backbones are a future option.
+
+Rough tiers (**ESTIMATES — untested; verify on your machine**):
+
+| Unified RAM | optim engine | diffusion (SDXL) |
+|---|---|---|
+| 8 GB | low/medium-res; prefer Adam + avg pooling | tight; needs slicing+tiling+low-res, may be impractical |
+| 16 GB | comfortable medium-res | possible with fp16 + slicing + tiling at modest res |
+| 24–32 GB | high-res | comfortable at typical res |
+| 64 GB+ | very high-res / batching headroom | comfortable, room for higher res |
+
 ## MPS caveats
 
 - **Keep `PYTORCH_ENABLE_MPS_FALLBACK=1` set.** Some ops still fall back to CPU;
@@ -185,10 +213,14 @@ engines, see [`docs/usage.md`](usage.md).
   affected op.
 - **No float64 on MPS.** artvid stays in float32 (optim) / a low-precision
   diffusion dtype on purpose; do not force `.double()` anywhere in the path.
-- **Diffusion dtype / memory.** With 128 GB unified memory the full SDXL stack
-  fits resident, so CPU offload (slow on MPS) is intentionally **not** enabled.
-  At 1024²+ resolutions, if peak memory is a concern, the design doc notes
-  `enable_attention_slicing()` / `enable_vae_tiling()` as `TODO(tuning)` levers.
+- **Diffusion dtype / memory.** Apple Silicon uses unified memory, so the GPU
+  shares your Mac's RAM and there is no separate VRAM budget — the practical
+  limit is your Mac's RAM minus what the OS and apps use. On Macs with ample RAM
+  the full SDXL stack fits resident, so CPU offload (slow on MPS) is **not**
+  enabled by default. At 1024²+ resolutions, or on lower-RAM Macs, the design
+  doc notes `enable_attention_slicing()` / `enable_vae_tiling()` as
+  `TODO(tuning)` levers; see
+  [Memory & RAM considerations](#memory--ram-considerations) for per-RAM tiers.
 - **First run needs network.** RAFT and the diffusion repos download on first
   use; after `prefetch_models.py` (or one warm run) everything loads from cache
   offline.

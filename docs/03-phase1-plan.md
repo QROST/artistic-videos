@@ -1,6 +1,6 @@
-# 03 · Phase 1 计划：复刻优化法 + RAFT，跑在 M5 Max
+# 03 · Phase 1 计划：复刻优化法 + RAFT，跑在 Apple Silicon Mac
 
-> 目标：把 2016 优化法忠实搬到 PyTorch+MPS，用 RAFT 取代 DeepFlow，产出一条命令出片的 CLI，并在 M5 Max 上验证质量与性能。
+> 目标：把 2016 优化法忠实搬到 PyTorch+MPS，用 RAFT 取代 DeepFlow，产出一条命令出片的 CLI，并在你的 Apple Silicon Mac（任意 M 系列 / MPS）上验证质量与性能。
 
 ## 1. 里程碑
 
@@ -34,7 +34,7 @@
 - 强相机运动片段上，多遍结果比单遍更稳定（定性 + 帧间差异度量）。
 
 ### M4 — CLI 一条龙 + 基准 + 文档
-**产出**：`artvid run <video> <style>`（抽帧→光流→风格化→合成）；M5 Max 性能基准；用户文档（README 更新或 `docs/usage.md`）。
+**产出**：`artvid run <video> <style>`（抽帧→光流→风格化→合成）；在你的 Apple Silicon Mac（任意 M 系列 / MPS）上测得的性能基准；用户文档（README 更新或 `docs/usage.md`）。
 **验收**：
 - 一条命令从 mp4 到 stylized.mp4 跑通。
 - 基准表：分辨率 × 每帧迭代数 × 每帧墙钟 × 峰值内存 × 是否 CPU 回退。
@@ -64,7 +64,7 @@ ffmpeg                         # 系统依赖
 | **回归** | 固定 `example/` 帧 + 固定 seed，存基准输出图，后续改动比对（SSIM/感知差异阈值） |
 | **质量** | 帧间稳定性度量：`mean |warp(out_{t-1}) - out_t|·mask`，越低越稳 |
 | **parity** | 与 2016 输出视觉对照；可选 caffe 权重路径做更接近的复现 |
-| **性能** | M5 Max 基准（见 M4） |
+| **性能** | 在你的 Apple Silicon Mac（任意 M 系列 / MPS）上测得的基准（见 M4） |
 
 ## 4. 风险与缓解
 

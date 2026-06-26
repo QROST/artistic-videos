@@ -443,7 +443,8 @@ def combine_anchor_reliability(
         previous and anchor references respectively, same shapes as the inputs.
 
     Notes:
-        TODO(tuning): on M5 Max, verify on long clips whether anchor warp stays
+        TODO(tuning): on your Apple Silicon Mac (any M-series with MPS), verify on
+        long clips whether anchor warp stays
         reliable enough over many frames under ``closestFirst`` (the anchor flow
         is composed/accumulated and may degrade), or whether keyframe
         re-anchoring (Rerender-style keyframe + interpolation) is needed (§2.6).

@@ -2,6 +2,8 @@
 
 > 逐文件、逐函数把现有 Torch7/Lua 实现映射到 `01-architecture.md` 定义的 PyTorch 模块。
 > 这是实现和 parity 验证的对照表：每个新模块都能指回它复刻的那段旧源。
+>
+> **注意**：下文中所有 Lua/脚本/C++ 源（`artistic_video*.lua`、`flowFileLoader.lua`、`lbfgs.lua`、`consistencyChecker.cpp`、`*.sh`、`models/`）现已统一移入仓库的 **`legacy/`** 目录（见 `legacy/README.md`）。文中按文件名+行号的引用（如 `artistic_video_core.lua:364-397`）指的就是 `legacy/` 下的对应文件。
 
 ## 1. 文件级映射
 

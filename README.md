@@ -37,8 +37,9 @@ artvid run input.mp4 style.jpg                      # optimization engine (defau
 artvid --engine diffusion run input.mp4 style.jpg   # SDXL diffusion engine
 ```
 
-The legacy Torch7/Lua implementation documented below remains in the repository as the
-original reference.
+The original Torch7/Lua implementation is preserved under [`legacy/`](legacy/) as a
+historical and parity reference (it does not run on Apple Silicon). Its documentation
+is reproduced below; file paths in it are now relative to `legacy/`.
 
 ---
 

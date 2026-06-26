@@ -74,7 +74,7 @@ EXPECTED_FILES = [
     ARTVID / "optim" / "lbfgs.py",
     ARTVID / "optim" / "runner.py",
     ARTVID / "pipeline" / "stylize_image.py",
-    REPO_ROOT / "examples" / "demo_stylize_image.py",
+    REPO_ROOT / "scripts" / "demo_stylize_image.py",
 ]
 
 

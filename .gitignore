@@ -4,11 +4,12 @@ out*.png
 *.jpg
 *.prototxt*
 *.caffemodel
-/models/
-!/models/download_models.sh
-deepflow2-static
-deepmatching-static
-consistencyChecker/consistencyChecker
+# Legacy Torch7/Lua reference (kept under legacy/; see legacy/README.md)
+/legacy/models/
+!/legacy/models/download_models.sh
+/legacy/deepflow2-static
+/legacy/deepmatching-static
+/legacy/consistencyChecker/consistencyChecker
 
 # Python (artvid)
 __pycache__/

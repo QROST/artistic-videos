@@ -2,6 +2,8 @@
 
 > M0/M1 两道代码审查闸门均**通过**，仅有以下**非阻塞**的 parity 偏差，记录于此，待在你的 Apple Silicon Mac（任意 M 系列 / MPS）上做运行时验证时确认/处理。
 > 这些不是 bug，多为「刻意的现代化取舍」或「数值幅度差异（可被 style_weight/learning_rate 吸收）」，符合 `00-overview.md` 中「追求视觉等价而非逐比特一致」的非目标。
+>
+> **注意**：文中按文件名+行号引用的 Lua/C++ 源（`artistic_video*.lua`、`consistencyChecker.cpp` 等）现位于仓库的 **`legacy/`** 目录。
 
 ## 验证现状
 
